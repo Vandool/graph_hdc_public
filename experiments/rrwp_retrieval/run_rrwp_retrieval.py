@@ -37,7 +37,7 @@ from torch_geometric.loader import DataLoader
 from torch_geometric import seed_everything
 from tqdm import tqdm
 
-from graph_hdc.datasets.utils import get_split, scan_node_features_with_rw
+from graph_hdc.datasets.utils import get_split, scan_features_with_rw
 from graph_hdc.hypernet.configs import (
     DecoderSettings,
     RWConfig,
@@ -47,9 +47,6 @@ from graph_hdc.hypernet.encoder import HyperNet
 from graph_hdc.hypernet.types import Feat
 from graph_hdc.utils.helpers import DataTransformer, pick_device
 from graph_hdc.utils.rw_features import augment_data_with_rw, get_zinc_rw_boundaries
-
-# Re-use baseline config builder from the existing retrieval experiment
-from experiments.scripts.run_retrieval_experiment import create_dynamic_config
 
 
 # ---------------------------------------------------------------------------
@@ -122,55 +119,26 @@ def graphs_isomorphic_base(g1: nx.Graph, g2: nx.Graph, base_dims: int) -> bool:
         return False
 
 
-def plot_comparison(
-    baseline_df: pd.DataFrame | None,
-    rrwp_df: pd.DataFrame,
+def plot_by_size(
+    df: pd.DataFrame,
     output_dir: Path,
-    metric: str = "edge_accuracy",
-    ylabel: str = "Edge Accuracy",
+    metric: str,
+    ylabel: str,
     tag: str = "",
 ):
-    """Side-by-side bar chart of *metric* by molecule size for baseline vs RRWP."""
-    fig, ax = plt.subplots(figsize=(14, 6))
+    """Bar chart of *metric* by molecule size."""
+    grouped = df.groupby("num_nodes")[metric].mean()
+    sizes = sorted(grouped.index)
 
-    rrwp_grouped = rrwp_df.groupby("num_nodes")[metric].mean()
-
-    if baseline_df is not None:
-        base_grouped = baseline_df.groupby("num_nodes")[metric].mean()
-        all_sizes = sorted(set(base_grouped.index) | set(rrwp_grouped.index))
-        x = np.arange(len(all_sizes))
-        width = 0.35
-        ax.bar(
-            x - width / 2,
-            [base_grouped.get(s, 0) for s in all_sizes],
-            width,
-            label="Baseline",
-            color="steelblue",
-            alpha=0.8,
-        )
-        ax.bar(
-            x + width / 2,
-            [rrwp_grouped.get(s, 0) for s in all_sizes],
-            width,
-            label="RRWP",
-            color="coral",
-            alpha=0.8,
-        )
-        ax.set_xticks(x)
-        ax.set_xticklabels(all_sizes)
-    else:
-        all_sizes = sorted(rrwp_grouped.index)
-        ax.bar(all_sizes, [rrwp_grouped.get(s, 0) for s in all_sizes],
-               color="coral", alpha=0.8, label="RRWP")
-
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.bar(sizes, [grouped.get(s, 0) for s in sizes], color="coral", alpha=0.8)
     ax.set_xlabel("Number of Nodes")
     ax.set_ylabel(ylabel)
     ax.set_title(f"{ylabel} by Molecule Size")
-    ax.legend()
     ax.grid(axis="y", alpha=0.3, linestyle="--")
     plt.tight_layout()
     prefix = f"{tag}_" if tag else ""
-    fig.savefig(output_dir / f"{prefix}comparison_{metric}.pdf", dpi=300, bbox_inches="tight")
+    fig.savefig(output_dir / f"{prefix}{metric}_by_size.pdf", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -189,20 +157,27 @@ def load_or_scan_features(
     output_dir: Path,
     dataset_name: str,
     rw_config: RWConfig,
-) -> set[tuple]:
-    """Load cached observed features or scan the dataset."""
+) -> tuple[set[tuple], set[tuple[tuple, tuple]]]:
+    """Load cached observed node and edge features, or scan the dataset."""
     cache = _cache_path(output_dir, dataset_name, rw_config.k_values, rw_config.num_bins)
     if cache.is_file():
         print(f"Loading cached features from {cache}")
         with open(cache, "rb") as f:
-            return pickle.load(f)
+            data = pickle.load(f)
+        # Backward compat: old caches store only nodes (a set of tuples)
+        if isinstance(data, set):
+            print("  Old cache (nodes only) — re-scanning to include edges...")
+        else:
+            nodes, edges = data
+            print(f"  {len(nodes)} node types, {len(edges)} edge types")
+            return nodes, edges
 
     print("Scanning dataset for observed RW-augmented features (this may take a while)...")
-    observed = scan_node_features_with_rw(dataset_name, rw_config)
+    nodes, edges = scan_features_with_rw(dataset_name, rw_config)
     with open(cache, "wb") as f:
-        pickle.dump(observed, f)
-    print(f"Cached {len(observed)} observed feature tuples to {cache}")
-    return observed
+        pickle.dump((nodes, edges), f)
+    print(f"Cached {len(nodes)} node types, {len(edges)} edge types to {cache}")
+    return nodes, edges
 
 
 # ---------------------------------------------------------------------------
@@ -274,9 +249,15 @@ def run_condition(
         nx_gt = pyg_to_nx_for_ground_truth(pyg_data, base_feature_dim)
 
         # --- Edge decoding ---
+        # Build node_counter from the sample's features (like the original
+        # decode_order_one approach) so we only check edge pairs between
+        # node types actually present — not the entire edges codebook.
+        node_tuples = [tuple(row) for row in pyg_data.x.int().tolist()]
+        node_counter = Counter(node_tuples)
+
         t0 = time.time()
         with torch.no_grad():
-            decoded_edges = hypernet.decode_order_one_no_node_terms(edge_term.clone())
+            decoded_edges = hypernet.decode_order_one(edge_term.clone(), node_counter)
         edge_dec_time = time.time() - t0
         edge_dec_times.append(edge_dec_time)
 
@@ -371,11 +352,12 @@ def run_condition(
         })
 
     summary.update({
-        "encoding_time_total": float(np.sum(encoding_times)),
-        "edge_decoding_time_total": float(np.sum(edge_dec_times)),
-        "graph_decoding_time_total": float(np.sum(graph_dec_times)),
+        "encoding_time_avg": float(np.mean(encoding_times)),
+        "edge_decoding_time_avg": float(np.mean(edge_dec_times)),
+        "graph_decoding_time_avg": float(np.mean(graph_dec_times)),
     })
 
+    total_dec_times = [e + g for e, g in zip(edge_dec_times, graph_dec_times)]
     detail_df = pd.DataFrame({
         "condition": condition_name,
         "num_nodes": num_nodes_list,
@@ -387,6 +369,7 @@ def run_condition(
         "encoding_time": encoding_times,
         "edge_decoding_time": edge_dec_times,
         "graph_decoding_time": graph_dec_times,
+        "total_decoding_time": total_dec_times,
     })
 
     # Print
@@ -396,9 +379,9 @@ def run_condition(
     if not skip_graph_decode:
         print(f"  Graph accuracy:          {n_graph_hits}/{n} ({summary['graph_hits_pct']:.1f}%)")
         print(f"  Cosine similarity:       {summary['cosine_similarity']:.4f}")
-    print(f"  Encoding time (total):   {summary['encoding_time_total']:.2f} s")
-    print(f"  Edge decode time (total):{summary['edge_decoding_time_total']:.2f} s")
-    print(f"  Graph decode time (total):{summary['graph_decoding_time_total']:.2f} s")
+    print(f"  Encoding time (avg):     {summary['encoding_time_avg']:.4f} s/graph")
+    print(f"  Edge decode time (avg):  {summary['edge_decoding_time_avg']:.4f} s/graph")
+    print(f"  Graph decode time (avg): {summary['graph_decoding_time_avg']:.4f} s/graph")
 
     return summary, detail_df
 
@@ -439,7 +422,7 @@ def main():
     parser.add_argument("--decoder", type=str, default="greedy", choices=["pattern_matching", "greedy"])
     parser.add_argument("--beam_size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--skip_baseline", action="store_true", help="Skip baseline (base features only)")
+    parser.add_argument("--output_dir", type=str, default=None, help="Override output directory")
     parser.add_argument("--skip_graph_decode", action="store_true", help="Skip full graph decode (faster)")
 
     args = parser.parse_args()
@@ -450,7 +433,10 @@ def main():
     if depth is None:
         depth = 4 if args.dataset == "zinc" else 3
 
-    output_dir = Path(__file__).parent.parent / "results" / "rrwp_retrieval"
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    else:
+        output_dir = Path(__file__).parent.parent / "results" / "rrwp_retrieval"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Base feature dimension per dataset
@@ -472,7 +458,6 @@ def main():
     print(f"  Decoder:          {args.decoder}")
     print(f"  Beam size:        {args.beam_size}")
     print(f"  Seed:             {args.seed}")
-    print(f"  Skip baseline:    {args.skip_baseline}")
     print(f"  Skip graph decode:{args.skip_graph_decode}")
     print(f"  Output dir:       {output_dir}")
     print("=" * 60)
@@ -523,8 +508,8 @@ def main():
         bin_boundaries=bin_boundaries,
     )
 
-    observed = load_or_scan_features(output_dir, args.dataset, rw_config)
-    print(f"Observed node feature tuples: {len(observed)}")
+    observed_nodes, observed_edges = load_or_scan_features(output_dir, args.dataset, rw_config)
+    print(f"Observed: {len(observed_nodes)} node types, {len(observed_edges)} edge types")
 
     # -------------------------------------------------------------------
     # 3. Create RRWP config & HyperNet (standard HyperNet, extended bins)
@@ -541,16 +526,19 @@ def main():
     rrwp_hypernet = HyperNet(
         config=rrwp_config,
         depth=depth,
-        observed_node_features=observed,
+        observed_node_features=observed_nodes,
     ).eval().to(device)
 
+    # Prune edges codebook to observed edge pairs
+    rrwp_hypernet.limit_edges_codebook(observed_edges)
+
     # Codebook stats
+    n_nodes = rrwp_hypernet.nodes_codebook.shape[0]
     print(f"\n--- Codebook Stats ---")
     print(f"  nodes_codebook: {rrwp_hypernet.nodes_codebook.shape}")
-    if hasattr(rrwp_hypernet, "_edges_codebook") and rrwp_hypernet._edges_codebook is not None:
-        print(f"  edges_codebook: {rrwp_hypernet._edges_codebook.shape}")
+    if rrwp_hypernet._edges_codebook is not None:
+        print(f"  edges_codebook: {rrwp_hypernet._edges_codebook.shape} (pruned from {n_nodes**2})")
     else:
-        n_nodes = rrwp_hypernet.nodes_codebook.shape[0]
         print(f"  edges_codebook: (lazy, estimated {n_nodes}^2 = {n_nodes**2} entries)")
 
     # -------------------------------------------------------------------
@@ -584,9 +572,9 @@ def main():
         device=device,
     )
 
-    # Build tag and experiment params early so we can save incrementally
+    # Build tag and experiment params for saving
     k_str = "_".join(str(k) for k in k_values)
-    tag = f"{args.dataset}_dim{args.hv_dim}_depth{depth}_k{k_str}_b{args.num_bins}_{args.decoder}"
+    tag = f"{args.dataset}_dim{args.hv_dim}_depth{depth}_k{k_str}_b{args.num_bins}_{args.decoder}_bs{args.beam_size}"
     experiment_params = {
         "dataset": args.dataset,
         "hv_dim": args.hv_dim,
@@ -598,62 +586,20 @@ def main():
         "seed": args.seed,
     }
 
-    # Save RRWP results immediately (safe against abort during baseline)
+    # Save results
     _save_condition(output_dir, tag, experiment_params, "rrwp", rrwp_summary, rrwp_detail)
 
-    # -------------------------------------------------------------------
-    # 6. Run baseline condition
-    # -------------------------------------------------------------------
-    baseline_summary = None
-    baseline_detail = None
-
-    if not args.skip_baseline:
-        baseline_config = create_dynamic_config(args.dataset, "HRR", args.hv_dim, depth)
-        baseline_hypernet = HyperNet(config=baseline_config, depth=depth).eval().to(device)
-
-        baseline_summary, baseline_detail = run_condition(
-            condition_name="baseline",
-            hypernet=baseline_hypernet,
-            samples=base_samples,
-            base_feature_dim=base_feature_dim,
-            dataset_name=args.dataset,
-            decoder=args.decoder,
-            beam_size=args.beam_size,
-            skip_graph_decode=args.skip_graph_decode,
-            device=device,
-        )
-        _save_condition(output_dir, tag, experiment_params, "baseline", baseline_summary, baseline_detail)
-
-    # -------------------------------------------------------------------
-    # 7. Save combined results
-    # -------------------------------------------------------------------
-    # JSON summary with both conditions + deltas
+    # JSON summary
     combined = {"args": vars(args), "rrwp": rrwp_summary}
-    if baseline_summary is not None:
-        combined["baseline"] = baseline_summary
-        deltas = {}
-        for key in ["edge_accuracy_full", "edge_accuracy_base", "graph_accuracy",
-                     "graph_hits_pct", "cosine_similarity"]:
-            if key in rrwp_summary and key in baseline_summary:
-                deltas[f"delta_{key}"] = rrwp_summary[key] - baseline_summary[key]
-        combined["deltas"] = deltas
-
     with open(output_dir / f"{tag}_summary.json", "w") as f:
         json.dump(combined, f, indent=2, default=str)
 
-    if baseline_detail is not None:
-        all_detail = pd.concat([baseline_detail, rrwp_detail], ignore_index=True)
-        all_detail.to_csv(output_dir / f"{tag}_all_detailed.csv", index=False)
-
-    # Comparison plots
-    for metric, ylabel in [
-        ("edge_accuracy_base", "Edge Accuracy (base features)"),
-        ("edge_accuracy_full", "Edge Accuracy (full features)"),
-    ]:
-        plot_comparison(baseline_detail, rrwp_detail, output_dir, metric=metric, ylabel=ylabel, tag=tag)
+    # Plots by molecule size
+    plot_by_size(rrwp_detail, output_dir, metric="edge_accuracy_full", ylabel="Edge Accuracy (full features)", tag=tag)
 
     if not args.skip_graph_decode:
-        plot_comparison(baseline_detail, rrwp_detail, output_dir, metric="graph_accuracy", ylabel="Graph Accuracy", tag=tag)
+        plot_by_size(rrwp_detail, output_dir, metric="graph_accuracy", ylabel="Graph Accuracy", tag=tag)
+        plot_by_size(rrwp_detail, output_dir, metric="total_decoding_time", ylabel="Avg Total Decoding Time (s)", tag=tag)
 
     print(f"\nResults saved to {output_dir}")
     print(f"  Summary: {tag}_summary.json")

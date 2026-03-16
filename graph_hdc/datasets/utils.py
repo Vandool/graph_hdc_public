@@ -289,9 +289,38 @@ def scan_node_features_with_rw(
         All unique node feature tuples observed across the dataset
         (with RW columns appended).
     """
+    nodes, _ = scan_features_with_rw(dataset_name, rw_config, max_samples)
+    return nodes
+
+
+def scan_features_with_rw(
+    dataset_name: Literal["qm9", "zinc"],
+    rw_config: "RWConfig",
+    max_samples: int | None = None,
+) -> tuple[set[tuple], set[tuple[tuple, tuple]]]:
+    """
+    Scan a dataset and return observed node and edge feature tuples after RW
+    augmentation.
+
+    Parameters
+    ----------
+    dataset_name : {"qm9", "zinc"}
+        Dataset to scan.
+    rw_config : RWConfig
+        Random walk configuration (must have ``enabled=True``).
+    max_samples : int, optional
+        If given, stop after this many samples (useful for testing).
+
+    Returns
+    -------
+    tuple[set[tuple], set[tuple[tuple, tuple]]]
+        (observed_node_tuples, observed_edge_pairs) where each edge pair
+        is ``(src_node_tuple, dst_node_tuple)``.
+    """
     from graph_hdc.utils.rw_features import augment_data_with_rw
 
     node_features: set[tuple] = set()
+    edge_features: set[tuple[tuple, tuple]] = set()
     count = 0
 
     for split in ["train", "valid", "test"]:
@@ -299,13 +328,15 @@ def scan_node_features_with_rw(
         for data in tqdm(ds, desc=f"Scanning {split} with RW", unit="mol"):
             d = data.clone()
             d = augment_data_with_rw(d, k_values=rw_config.k_values, num_bins=rw_config.num_bins, bin_boundaries=rw_config.bin_boundaries, clip_range=rw_config.clip_range)
-            for row in d.x.int():
-                node_features.add(tuple(row.tolist()))
+            node_tuples = {i: tuple(row.tolist()) for i, row in enumerate(d.x.int())}
+            node_features.update(node_tuples.values())
+            for u, v in d.edge_index.t().tolist():
+                edge_features.add((node_tuples[u], node_tuples[v]))
             count += 1
             if max_samples is not None and count >= max_samples:
-                return node_features
+                return node_features, edge_features
 
-    return node_features
+    return node_features, edge_features
 
 
 def compute_standardization_stats(

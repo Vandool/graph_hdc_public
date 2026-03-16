@@ -202,6 +202,16 @@ class HyperNet(pl.LightningModule):
     def __repr__(self) -> str:
         return self.__str__()
 
+    def _batched_forward(self, graphs: list, batch_size: int = 64) -> dict:
+        """Encode a list of NX graphs in mini-batches, returning concatenated outputs."""
+        data_list = [DataTransformer.nx_to_pyg(g) for g in graphs]
+        loader = DataLoader(data_list, batch_size=batch_size, shuffle=False)
+        outputs = []
+        for mini_batch in loader:
+            outputs.append(self.forward(mini_batch.to(self.device)))
+        keys = outputs[0].keys()
+        return {key: torch.cat([o[key] for o in outputs], dim=0) for key in keys}
+
     def _validate_vsa(self, vsa: VSAModel) -> VSAModel:
         """Validate VSA model is supported."""
         if vsa in self.__allowed_vsa_models__:
@@ -243,6 +253,45 @@ class HyperNet(pl.LightningModule):
         for _, (enc, _) in self.node_encoder_map.items():
             enc.codebook = self.nodes_codebook
             enc.indexer = self.nodes_indexer
+
+    def limit_edges_codebook(self, observed_edges: set[tuple[tuple, tuple]]) -> None:
+        """Prune edges codebook to only observed (src, dst) node-type pairs.
+
+        Must be called after ``limit_nodes_codebook`` so that
+        ``nodes_indexer`` maps the pruned node types.
+
+        Parameters
+        ----------
+        observed_edges : set of (src_tuple, dst_tuple)
+            Edge pairs actually seen in the dataset (directed — include
+            both orientations).
+        """
+        # Build edge HVs only for observed pairs
+        edge_pairs = []  # (node_idx_a, node_idx_b) in pruned indexer space
+        edge_hvs = []
+        seen = set()
+        for src_t, dst_t in sorted(observed_edges):
+            src_idx = self.nodes_indexer.get_idx(src_t)
+            dst_idx = self.nodes_indexer.get_idx(dst_t)
+            if src_idx is None or dst_idx is None:
+                continue
+            key = (src_idx, dst_idx)
+            if key in seen:
+                continue
+            seen.add(key)
+            hv = self.nodes_codebook[src_idx].bind(self.nodes_codebook[dst_idx])
+            edge_hvs.append(hv)
+            edge_pairs.append(key)
+
+        if not edge_hvs:
+            return
+
+        self._edges_codebook = torch.stack(edge_hvs).to(self.nodes_codebook.device)
+        # Build a lightweight indexer with the same interface as TupleIndexer
+        self._edges_indexer = TupleIndexer.__new__(TupleIndexer)
+        self._edges_indexer.sizes = []
+        self._edges_indexer.idx_to_tuple = edge_pairs
+        self._edges_indexer.tuple_to_idx = {t: i for i, t in enumerate(edge_pairs)}
 
     def rebuild_unpruned_codebook(self) -> None:
         """Rebuild the full unpruned codebook from the original seed.
@@ -755,12 +804,11 @@ class HyperNet(pl.LightningModule):
         # edges_codebook and edges_indexer are already initialized in _build_codebooks()
 
         if self._max_step_delta is None:
-            norms = []
-            for hd_a in self.nodes_codebook:
-                for hd_b in self.nodes_codebook:
-                    delta = hd_a.bind(hd_b) + hd_b.bind(hd_a)
-                    norms.append(delta.norm().item())
-            self._max_step_delta = min(norms)
+            # Vectorized computation over the edges codebook.
+            # For all supported VSAs (HRR, MAP, FHRR), bind is commutative,
+            # so bind(a,b) + bind(b,a) = 2*bind(a,b) and
+            # norm(delta) = 2 * norm(bind(a,b)).
+            self._max_step_delta = (self.edges_codebook.norm(dim=-1) * 2).min().item()
 
         eps = self._max_step_delta * 0.01
 
@@ -1218,7 +1266,7 @@ class HyperNet(pl.LightningModule):
         # Case 2D/3D vectors with G0 encoded
         if node_counter:
             decoded_edges = self.decode_order_one(edge_term=edge_term, node_counter=node_counter)
-            edge_count = sum([(e_idx + 1) * n for (_, e_idx, _, _), n in node_counter.items()])
+            edge_count = sum([(t[1] + 1) * n for t, n in node_counter.items()])
         else:
             decoded_edges = self.decode_order_one_no_node_terms(edge_term=edge_term.clone())
             edge_count = len(decoded_edges) // 2  # bidirectional edges
@@ -1416,8 +1464,7 @@ class HyperNet(pl.LightningModule):
                 are_final = [i.total() == 0 for i in edges_left]
 
                 # Compute cosine similarities for all graphs
-                batch = Batch.from_data_list([DataTransformer.nx_to_pyg(g) for g in graphs]).to(edge_term.device)
-                enc_out = self.forward(batch)
+                enc_out = self._batched_forward(graphs)
                 g_terms = enc_out[graph_embedding_attr]
                 if decoder_settings.use_g3_instead_of_h3:
                     g_terms = enc_out["node_terms"] + enc_out["edge_terms"] + g_terms
@@ -1463,18 +1510,8 @@ class HyperNet(pl.LightningModule):
 
                     res = []
                     for ch in [v for _, v in repo.items()]:
-                        # Encode and compute similaity
-                        data_list = [DataTransformer.nx_to_pyg(c) for c, _ in ch]
-                        BATCH_SIZE = 64
-                        loader = DataLoader(data_list, batch_size=BATCH_SIZE, shuffle=False)
-                        outputs = []
-                        # 4. Iterate and process
-                        for mini_batch in loader:
-                            out = self.forward(mini_batch.to(self.device))
-                            outputs.append(out)
-                        keys = outputs[0].keys()
-
-                        enc_out = {key: torch.cat([batch_out[key] for batch_out in outputs], dim=0) for key in keys}
+                        # Encode and compute similarity
+                        enc_out = self._batched_forward([c for c, _ in ch])
 
                         g_terms = enc_out[graph_embedding_attr]
                         if decoder_settings.use_g3_instead_of_h3:
@@ -1528,8 +1565,7 @@ class HyperNet(pl.LightningModule):
                     children = res
                 else:
                     # Encode and compute similarity
-                    batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in children]).to(edge_term.device)
-                    enc_out = self.forward(batch)
+                    enc_out = self._batched_forward([c for c, _ in children])
                     g_terms = enc_out[graph_embedding_attr]
                     if decoder_settings.use_g3_instead_of_h3:
                         g_terms = enc_out["node_terms"] + enc_out["edge_terms"] + g_terms
@@ -1593,8 +1629,7 @@ class HyperNet(pl.LightningModule):
         are_final = [i.total() == 0 for i in edges_left]
 
         # Compute cosine similarities for all final graphs
-        batch = Batch.from_data_list([DataTransformer.nx_to_pyg(g) for g in graphs]).to(edge_term.device)
-        enc_out = self.forward(batch)
+        enc_out = self._batched_forward(graphs)
         g_terms = enc_out[graph_embedding_attr]
         if decoder_settings.use_g3_instead_of_h3:
             g_terms = enc_out["node_terms"] + enc_out["edge_terms"] + g_terms
