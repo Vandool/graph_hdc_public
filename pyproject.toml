@@ -39,6 +39,10 @@ cuda = [
     "torch>=2.5.1",
     "torchvision>=0.20.0",
 ]
+cuda128 = [
+    "torch>=2.5.1",
+    "torchvision>=0.20.0",
+]
 dev = [
     "ruff>=0.12.0",
     "pytest>=8.4.0",
@@ -64,11 +68,14 @@ exclude = [
 
 # uv configuration for PyTorch CPU/CUDA handling
 # Install with: uv sync --extra cpu   OR   uv sync --extra cuda
+# uv configuration for PyTorch CPU/CUDA handling
+# Install with: uv sync --extra cpu   OR   uv sync --extra cuda   OR   uv sync --extra cuda128
 [tool.uv]
 conflicts = [
     [
         { extra = "cpu" },
         { extra = "cuda" },
+        { extra = "cuda128" },
     ],
 ]
 
@@ -76,10 +83,12 @@ conflicts = [
 torch = [
     { index = "pytorch-cpu", extra = "cpu" },
     { index = "pytorch-cu126", extra = "cuda" },
+    { index = "pytorch-cu128", extra = "cuda128" },
 ]
 torchvision = [
     { index = "pytorch-cpu", extra = "cpu" },
     { index = "pytorch-cu126", extra = "cuda" },
+    { index = "pytorch-cu128", extra = "cuda128" },
 ]
 
 [[tool.uv.index]]
@@ -90,4 +99,9 @@ explicit = true
 [[tool.uv.index]]
 name = "pytorch-cu126"
 url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true

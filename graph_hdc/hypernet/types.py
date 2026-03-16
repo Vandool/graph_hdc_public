@@ -47,6 +47,8 @@ class Feat:
         formal_charge_idx: Encoded as 0, 1, 2 for charges [0, +1, -1]
         explicit_hs: Total explicit hydrogens (0..4)
         is_in_ring: Whether atom is in a ring (optional, used for ZINC)
+        extra: Additional feature indices (e.g. RRWP bins) preserved
+               through the decode -> re-encode cycle.
     """
 
     atom_type: int
@@ -54,6 +56,7 @@ class Feat:
     formal_charge_idx: int
     explicit_hs: int
     is_in_ring: bool | None = None
+    extra: tuple = ()
 
     @property
     def target_degree(self) -> int:
@@ -61,29 +64,37 @@ class Feat:
         return self.degree_idx + 1
 
     def to_tuple(self) -> tuple:
-        """Return feature tuple (atom_type, degree_idx, formal_charge_idx, explicit_hs[, is_in_ring])."""
+        """Return full feature tuple including any extra dims."""
         res = [self.atom_type, self.degree_idx, self.formal_charge_idx, self.explicit_hs]
         if self.is_in_ring is not None:
             res.append(int(self.is_in_ring))
+        res.extend(self.extra)
         return tuple(res)
 
     @staticmethod
     def from_tuple(t: tuple) -> "Feat":
         """
-        Construct a Feat from a tuple of length 4 or 5.
+        Construct a Feat from a tuple of length 4 or more.
+
+        The first 5 fields map to the base molecular features; any
+        additional elements are stored in ``extra`` and round-trip
+        through ``to_tuple`` unchanged.
 
         Args:
-            t: Tuple (atom_type, degree_idx, formal_charge_idx, explicit_hs[, is_in_ring])
+            t: Tuple (atom_type, degree_idx, formal_charge_idx,
+               explicit_hs[, is_in_ring[, extra_0, extra_1, ...]])
 
         Returns:
             Feat instance
 
         Raises:
-            ValueError: If tuple length is not 4 or 5
+            ValueError: If tuple length is less than 4
         """
+        if len(t) < 4:
+            raise ValueError(f"Expected tuple of length >= 4, got {len(t)}")
+        a, d, c, h = int(t[0]), int(t[1]), int(t[2]), int(t[3])
         if len(t) == 4:
-            a, d, c, h = t
-            return Feat(int(a), int(d), int(c), int(h))
-
-        a, d, c, h, r = t
-        return Feat(int(a), int(d), int(c), int(h), bool(r) if r is not None else None)
+            return Feat(a, d, c, h)
+        r = t[4]
+        extra = tuple(int(x) for x in t[5:])
+        return Feat(a, d, c, h, bool(r) if r is not None else None, extra=extra)

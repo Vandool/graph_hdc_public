@@ -1416,7 +1416,7 @@ class HyperNet(pl.LightningModule):
                 are_final = [i.total() == 0 for i in edges_left]
 
                 # Compute cosine similarities for all graphs
-                batch = Batch.from_data_list([DataTransformer.nx_to_pyg(g) for g in graphs])
+                batch = Batch.from_data_list([DataTransformer.nx_to_pyg(g) for g in graphs]).to(edge_term.device)
                 enc_out = self.forward(batch)
                 g_terms = enc_out[graph_embedding_attr]
                 if decoder_settings.use_g3_instead_of_h3:
@@ -1527,8 +1527,8 @@ class HyperNet(pl.LightningModule):
                                 res.extend(random_candidates)
                     children = res
                 else:
-                    # Encode and compute similaity
-                    batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in children])
+                    # Encode and compute similarity
+                    batch = Batch.from_data_list([DataTransformer.nx_to_pyg(c) for c, _ in children]).to(edge_term.device)
                     enc_out = self.forward(batch)
                     g_terms = enc_out[graph_embedding_attr]
                     if decoder_settings.use_g3_instead_of_h3:
@@ -1593,7 +1593,7 @@ class HyperNet(pl.LightningModule):
         are_final = [i.total() == 0 for i in edges_left]
 
         # Compute cosine similarities for all final graphs
-        batch = Batch.from_data_list([DataTransformer.nx_to_pyg(g) for g in graphs])
+        batch = Batch.from_data_list([DataTransformer.nx_to_pyg(g) for g in graphs]).to(edge_term.device)
         enc_out = self.forward(batch)
         g_terms = enc_out[graph_embedding_attr]
         if decoder_settings.use_g3_instead_of_h3:

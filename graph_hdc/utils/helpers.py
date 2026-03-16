@@ -389,8 +389,8 @@ class DataTransformer:
             raise ValueError("data.edge_index is None.")
 
         x = data.x
-        if x.dim() != 2 or x.size(1) not in [4, 5]:
-            raise ValueError(f"Expected data.x shape [N,4] or [N,5], got {tuple(x.size())}.")
+        if x.dim() != 2 or x.size(1) < 4:
+            raise ValueError(f"Expected data.x shape [N, >=4], got {tuple(x.size())}.")
 
         # Ensure integer features
         if not torch.is_floating_point(x):
