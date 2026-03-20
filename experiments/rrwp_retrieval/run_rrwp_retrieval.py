@@ -46,7 +46,7 @@ from graph_hdc.hypernet.configs import (
 from graph_hdc.hypernet.encoder import HyperNet
 from graph_hdc.hypernet.types import Feat
 from graph_hdc.utils.helpers import DataTransformer, pick_device
-from graph_hdc.utils.rw_features import augment_data_with_rw, get_zinc_rw_boundaries
+from graph_hdc.utils.rw_features import augment_data_with_rw, get_pubchem_large_rw_boundaries, get_zinc_rw_boundaries
 
 
 # ---------------------------------------------------------------------------
@@ -413,7 +413,7 @@ def main():
         description="RRWP-enriched retrieval experiment",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--dataset", type=str, default="zinc", choices=["qm9", "zinc"])
+    parser.add_argument("--dataset", type=str, default="zinc", choices=["qm9", "zinc", "pubchem_large"])
     parser.add_argument("--hv_dim", type=int, default=512)
     parser.add_argument("--depth", type=int, default=None, help="Message passing depth (default: dataset-specific)")
     parser.add_argument("--k_values", type=str, default="6", help="Comma-separated RW step counts")
@@ -431,7 +431,8 @@ def main():
     k_values = tuple(int(k) for k in args.k_values.split(","))
     depth = args.depth
     if depth is None:
-        depth = 4 if args.dataset == "zinc" else 3
+        from graph_hdc.hypernet.configs import _BASE_DEPTH
+        depth = _BASE_DEPTH.get(args.dataset, 4)
 
     if args.output_dir:
         output_dir = Path(args.output_dir)
@@ -439,8 +440,10 @@ def main():
         output_dir = Path(__file__).parent.parent / "results" / "rrwp_retrieval"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Base feature dimension per dataset
-    base_feature_dim = 5 if args.dataset == "zinc" else 4
+    # Base feature dimension and bins per dataset
+    from graph_hdc.hypernet.configs import _BASE_BINS
+    base_bins = _BASE_BINS[args.dataset]
+    base_feature_dim = len(base_bins)
 
     # Print experiment configuration
     print()
@@ -452,8 +455,8 @@ def main():
     print(f"  MP depth:         {depth}")
     print(f"  RW k-values:      {k_values}")
     print(f"  RW num_bins:      {args.num_bins}")
-    print(f"  Base bins:        {[9,6,3,4,2] if args.dataset == 'zinc' else [4,5,3,5]}")
-    print(f"  Extended bins:    {[9,6,3,4,2] + [args.num_bins]*len(k_values) if args.dataset == 'zinc' else [4,5,3,5] + [args.num_bins]*len(k_values)}")
+    print(f"  Base bins:        {base_bins}")
+    print(f"  Extended bins:    {base_bins + [args.num_bins]*len(k_values)}")
     print(f"  Samples:          {args.n_samples}")
     print(f"  Decoder:          {args.decoder}")
     print(f"  Beam size:        {args.beam_size}")
@@ -498,6 +501,12 @@ def main():
     # -------------------------------------------------------------------
     if args.dataset == "zinc":
         bin_boundaries = get_zinc_rw_boundaries(args.num_bins)
+    elif args.dataset == "pubchem_large":
+        try:
+            bin_boundaries = get_pubchem_large_rw_boundaries(args.num_bins)
+        except ValueError:
+            print(f"  No precomputed PubChem-Large boundaries for {args.num_bins} bins, using uniform binning")
+            bin_boundaries = None
     else:
         bin_boundaries = None  # uniform binning for QM9
 
@@ -574,7 +583,7 @@ def main():
 
     # Build tag and experiment params for saving
     k_str = "_".join(str(k) for k in k_values)
-    tag = f"{args.dataset}_dim{args.hv_dim}_depth{depth}_k{k_str}_b{args.num_bins}_{args.decoder}_bs{args.beam_size}"
+    tag = f"{args.dataset}_dim{args.hv_dim}_depth{depth}_k{k_str}_b{args.num_bins}_{args.decoder}_bs{args.beam_size}_n{args.n_samples}"
     experiment_params = {
         "dataset": args.dataset,
         "hv_dim": args.hv_dim,
@@ -584,6 +593,8 @@ def main():
         "decoder": args.decoder,
         "beam_size": args.beam_size,
         "seed": args.seed,
+        "n_observed_node_types": len(observed_nodes),
+        "n_observed_edge_types": len(observed_edges),
     }
 
     # Save results

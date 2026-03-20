@@ -74,6 +74,8 @@ MAX_ALLOWED_DECODING_NODES_QM9: Final[int] = 18
 MAX_ALLOWED_DECODING_EDGES_QM9: Final[int] = 50
 MAX_ALLOWED_DECODING_NODES_ZINC: Final[int] = 60
 MAX_ALLOWED_DECODING_EDGES_ZINC: Final[int] = 122
+MAX_ALLOWED_DECODING_NODES_PUBCHEM_LARGE: Final[int] = 70
+MAX_ALLOWED_DECODING_EDGES_PUBCHEM_LARGE: Final[int] = 200
 
 
 class CorrectionLevel(str, enum.Enum):
@@ -175,7 +177,11 @@ class HyperNet(pl.LightningModule):
         self._build_codebooks(device, observed_node_features=observed_node_features)
 
         # Decoding parameters (dataset-dependent)
-        self._decoding_edge_limit = MAX_ALLOWED_DECODING_EDGES_QM9 if self.base_dataset == "qm9" else MAX_ALLOWED_DECODING_EDGES_ZINC
+        self._decoding_edge_limit = (
+            MAX_ALLOWED_DECODING_EDGES_QM9 if self.base_dataset == "qm9"
+            else MAX_ALLOWED_DECODING_EDGES_PUBCHEM_LARGE if self.base_dataset == "pubchem_large"
+            else MAX_ALLOWED_DECODING_EDGES_ZINC
+        )
         self._max_step_delta: float | None = None
 
     def __str__(self) -> str:
@@ -590,6 +596,8 @@ class HyperNet(pl.LightningModule):
         # Get decoding limit based on dataset
         if self.base_dataset == "qm9":
             max_nodes = MAX_ALLOWED_DECODING_NODES_QM9
+        elif self.base_dataset == "pubchem_large":
+            max_nodes = MAX_ALLOWED_DECODING_NODES_PUBCHEM_LARGE
         else:
             max_nodes = MAX_ALLOWED_DECODING_NODES_ZINC
 
@@ -1274,7 +1282,11 @@ class HyperNet(pl.LightningModule):
             if not target_reached(decoded_edges):
                 decoded_edges = self.decode_order_one(edge_term=edge_term.clone(), node_counter=node_counter)
 
-        node_limit = MAX_ALLOWED_DECODING_NODES_QM9 if self.base_dataset == "qm9" else MAX_ALLOWED_DECODING_NODES_ZINC
+        node_limit = (
+            MAX_ALLOWED_DECODING_NODES_QM9 if self.base_dataset == "qm9"
+            else MAX_ALLOWED_DECODING_NODES_PUBCHEM_LARGE if self.base_dataset == "pubchem_large"
+            else MAX_ALLOWED_DECODING_NODES_ZINC
+        )
         if node_counter.total() > node_limit:
             return DecodingResult(correction_level=CorrectionLevel.FAIL)
 
@@ -1359,7 +1371,7 @@ class HyperNet(pl.LightningModule):
                     # # Early pruning of bad ring structures
                     if (
                         validate_ring_structure
-                        and self.base_dataset == "zinc"
+                        and self.base_dataset in ("zinc", "pubchem_large")
                         and not has_valid_ring_structure(
                             G=C,
                             processed_histogram=self.dataset_info.ring_histogram,
@@ -1816,7 +1828,11 @@ class HyperNet(pl.LightningModule):
         instance.rw_config = RWConfig(**rw_dict) if rw_dict else RWConfig()
         instance.prune_codebook = cfg.get("prune_codebook", True)
         instance.normalize_graph_embedding = cfg.get("normalize_graph_embedding", False)
-        instance._decoding_edge_limit = 50 if instance.base_dataset == "qm9" else 122
+        instance._decoding_edge_limit = (
+            50 if instance.base_dataset == "qm9"
+            else 200 if instance.base_dataset == "pubchem_large"
+            else 122
+        )
         instance._max_step_delta = None
 
         # Restore encoder maps

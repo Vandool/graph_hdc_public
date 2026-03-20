@@ -16,7 +16,7 @@ from graph_hdc.hypernet.types import VSAModel
 from graph_hdc.utils.helpers import pick_device_str
 
 IndexRange = tuple[int, int]
-BaseDataset = Literal["qm9", "zinc"]
+BaseDataset = Literal["qm9", "zinc", "pubchem_large"]
 
 
 class Features(enum.Enum):
@@ -169,6 +169,7 @@ class DecoderSettings:
                 max_graphs_per_iter=1024,
                 fallback_decoder_settings=FallbackDecoderSettings(limit=2048, beam_size=2048),
             )
+        # ZINC and PubChem-Large share the same defaults (large molecules)
         return cls(
             iteration_budget=25,
             max_graphs_per_iter=1024,
@@ -231,10 +232,38 @@ def _get_zinc_config(hv_dim: int = 256) -> DSHDCConfig:
     )
 
 
+def _get_pubchem_large_config(hv_dim: int = 512) -> DSHDCConfig:
+    """Create PubChem-Large dataset configuration."""
+
+    return DSHDCConfig(
+        seed=42,
+        name=f"PubChemLargeSmilesHRR{hv_dim}F645G1NG4",
+        base_dataset="pubchem_large",
+        vsa=VSAModel.HRR,
+        hv_dim=hv_dim,
+        device=pick_device_str(),
+        node_feature_configs=OrderedDict([
+            (
+                Features.NODE_FEATURES,
+                FeatureConfig(
+                    count=math.prod([13, 5, 3, 4, 2]),  # 1560 combinations
+                    encoder_cls=CombinatoricIntegerEncoder,
+                    index_range=IndexRange((0, 5)),
+                    bins=[13, 5, 3, 4, 2],
+                ),
+            ),
+        ]),
+        normalize=True,
+        hypernet_depth=4,
+        dtype="float64",
+    )
+
+
 class SupportedDataset(enum.Enum):
     """Supported datasets with their configurations."""
     QM9_SMILES_HRR_256_F64_G1NG3 = ("QM9_SMILES_HRR_256_F64_G1NG3", None)
     ZINC_SMILES_HRR_256_F64_5G1NG4 = ("ZINC_SMILES_HRR_256_F64_5G1NG4", None)
+    PUBCHEM_LARGE_SMILES_HRR_512_F64_5G1NG4 = ("PUBCHEM_LARGE_SMILES_HRR_512_F64_5G1NG4", None)
 
     def __new__(cls, value: str, _):
         obj = object.__new__(cls)
@@ -246,6 +275,8 @@ class SupportedDataset(enum.Enum):
         """Get the default configuration for this dataset."""
         if "QM9" in self._value_:
             return _get_qm9_config(hv_dim=256)
+        if "PUBCHEM" in self._value_:
+            return _get_pubchem_large_config(hv_dim=512)
         return _get_zinc_config(hv_dim=256)
 
 
@@ -262,11 +293,13 @@ def get_config(dataset_name: str) -> DSHDCConfig:
 _BASE_BINS: dict[BaseDataset, list[int]] = {
     "qm9": [4, 5, 3, 5],
     "zinc": [9, 6, 3, 4, 2],
+    "pubchem_large": [13, 5, 3, 4, 2],
 }
 
 _BASE_DEPTH: dict[BaseDataset, int] = {
     "qm9": 3,
     "zinc": 4,
+    "pubchem_large": 4,
 }
 
 

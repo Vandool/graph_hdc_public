@@ -19,11 +19,13 @@ from graph_hdc.datasets.utils import (
     get_split,
     post_compute_encodings,
 )
+from graph_hdc.datasets.pubchem_large_smiles import PubChemLargeSmiles
 from graph_hdc.datasets.zinc_smiles import ZincSmiles
 
 __all__ = [
     "QM9Smiles",
     "ZincSmiles",
+    "PubChemLargeSmiles",
     "get_split",
     "get_dataset_info",
     "DatasetInfo",

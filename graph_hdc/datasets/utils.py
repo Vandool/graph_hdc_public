@@ -21,6 +21,7 @@ from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
 from tqdm.auto import tqdm
 
+from graph_hdc.datasets.pubchem_large_smiles import PubChemLargeSmiles
 from graph_hdc.datasets.qm9_smiles import QM9Smiles
 from graph_hdc.datasets.zinc_smiles import ZincSmiles
 
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
 
 def get_split(
     split: Literal["train", "valid", "test"],
-    dataset: Literal["qm9", "zinc"] = "qm9",
+    dataset: Literal["qm9", "zinc", "pubchem_large"] = "qm9",
 ) -> InMemoryDataset:
     """
     Load a dataset split.
@@ -43,7 +44,7 @@ def get_split(
     split : str
         One of {"train", "valid", "test"}
     dataset : str
-        One of {"qm9", "zinc"}
+        One of {"qm9", "zinc", "pubchem_large"}
 
     Returns
     -------
@@ -54,8 +55,10 @@ def get_split(
         return QM9Smiles(split=split)
     elif dataset == "zinc":
         return ZincSmiles(split=split)
+    elif dataset == "pubchem_large":
+        return PubChemLargeSmiles(split=split)
     else:
-        raise ValueError(f"Unknown dataset: {dataset}. Use 'qm9' or 'zinc'.")
+        raise ValueError(f"Unknown dataset: {dataset}. Use 'qm9', 'zinc', or 'pubchem_large'.")
 
 
 @dataclass
@@ -75,7 +78,7 @@ class DatasetInfo:
     """For ZINC: node features that appear only in single rings."""
 
 
-def get_dataset_info(dataset: Literal["qm9", "zinc"]) -> DatasetInfo:
+def get_dataset_info(dataset: Literal["qm9", "zinc", "pubchem_large"]) -> DatasetInfo:
     """
     Get or compute dataset information (node/edge features, ring info).
 
@@ -85,6 +88,8 @@ def get_dataset_info(dataset: Literal["qm9", "zinc"]) -> DatasetInfo:
         dataset_cls = QM9Smiles
     elif dataset == "zinc":
         dataset_cls = ZincSmiles
+    elif dataset == "pubchem_large":
+        dataset_cls = PubChemLargeSmiles
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
 
@@ -124,8 +129,8 @@ def get_dataset_info(dataset: Literal["qm9", "zinc"]) -> DatasetInfo:
                 feat_v = node_idx_to_tuple[v]
                 edge_features.add(tuple(sorted((feat_u, feat_v))))
 
-            # Ring info (ZINC only)
-            if dataset != "zinc":
+            # Ring info (ZINC and PubChem-Large)
+            if dataset not in ("zinc", "pubchem_large"):
                 continue
 
             mol = Chem.MolFromSmiles(data.smiles)
@@ -162,7 +167,7 @@ def get_dataset_info(dataset: Literal["qm9", "zinc"]) -> DatasetInfo:
     final_ring_histogram: dict[tuple, dict[int, int]] | None = None
     single_ring_features: set[tuple] | None = None
 
-    if dataset == "zinc":
+    if dataset in ("zinc", "pubchem_large"):
         single_ring_features = set()
         for atom_tuple, total_count in atom_tuple_total_counts.items():
             if never_multiple_rings_counter[atom_tuple] == total_count:
@@ -262,7 +267,7 @@ def post_compute_encodings(
 
 
 def scan_node_features_with_rw(
-    dataset_name: Literal["qm9", "zinc"],
+    dataset_name: Literal["qm9", "zinc", "pubchem_large"],
     rw_config: "RWConfig",
     max_samples: int | None = None,
 ) -> set[tuple]:
@@ -276,7 +281,7 @@ def scan_node_features_with_rw(
 
     Parameters
     ----------
-    dataset_name : {"qm9", "zinc"}
+    dataset_name : {"qm9", "zinc", "pubchem_large"}
         Dataset to scan.
     rw_config : RWConfig
         Random walk configuration (must have ``enabled=True``).
@@ -294,7 +299,7 @@ def scan_node_features_with_rw(
 
 
 def scan_features_with_rw(
-    dataset_name: Literal["qm9", "zinc"],
+    dataset_name: Literal["qm9", "zinc", "pubchem_large"],
     rw_config: "RWConfig",
     max_samples: int | None = None,
 ) -> tuple[set[tuple], set[tuple[tuple, tuple]]]:
@@ -304,7 +309,7 @@ def scan_features_with_rw(
 
     Parameters
     ----------
-    dataset_name : {"qm9", "zinc"}
+    dataset_name : {"qm9", "zinc", "pubchem_large"}
         Dataset to scan.
     rw_config : RWConfig
         Random walk configuration (must have ``enabled=True``).
