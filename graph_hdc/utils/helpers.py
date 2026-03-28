@@ -256,12 +256,12 @@ class DataTransformer:
         nodes = sorted(G.nodes)
         idx_of = {n: i for i, n in enumerate(nodes)}
 
-        # Auto-detect attribute
+        # Auto-detect attribute — prefer raw 'type' tuple over Feat objects
         if nodes:
-            if "feat" in G.nodes[nodes[0]]:
-                node_attr = "feat"
-            elif "type" in G.nodes[nodes[0]]:
+            if "type" in G.nodes[nodes[0]]:
                 node_attr = "type"
+            elif "feat" in G.nodes[nodes[0]]:
+                node_attr = "feat"
 
         # Extract features
         if node_attr == "feat":
@@ -307,20 +307,21 @@ class DataTransformer:
         nodes = sorted(G.nodes)
         idx_of = {n: i for i, n in enumerate(nodes)}
 
-        # Extract features from 'type' attribute
+        # Extract features — prefer raw 'type' tuple (preserves exact values
+        # that Feat.to_tuple() may booleanize for RRWP bins on QM9)
         feats = []
         for n in nodes:
             node_data = G.nodes[n]
-            if "feat" in node_data:
+            if "type" in node_data:
+                feats.append(list(node_data["type"]))
+            elif "feat" in node_data:
                 feat = node_data["feat"]
                 if hasattr(feat, "to_tuple"):
                     feats.append(list(feat.to_tuple()))
                 else:
                     feats.append(list(feat))
-            elif "type" in node_data:
-                feats.append(list(node_data["type"]))
             else:
-                raise ValueError(f"Node {n} has no 'feat' or 'type' attribute")
+                raise ValueError(f"Node {n} has no 'type' or 'feat' attribute")
 
         x = torch.tensor(feats, dtype=torch.float)
 

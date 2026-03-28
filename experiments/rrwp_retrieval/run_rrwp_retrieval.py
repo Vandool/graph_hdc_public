@@ -46,7 +46,7 @@ from graph_hdc.hypernet.configs import (
 from graph_hdc.hypernet.encoder import HyperNet
 from graph_hdc.hypernet.types import Feat
 from graph_hdc.utils.helpers import DataTransformer, pick_device
-from graph_hdc.utils.rw_features import augment_data_with_rw, get_pubchem_large_rw_boundaries, get_zinc_rw_boundaries
+from graph_hdc.utils.rw_features import augment_data_with_rw, get_pubchem_rw_boundaries, get_zinc_rw_boundaries
 
 
 # ---------------------------------------------------------------------------
@@ -413,7 +413,7 @@ def main():
         description="RRWP-enriched retrieval experiment",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--dataset", type=str, default="zinc", choices=["qm9", "zinc", "pubchem_large"])
+    parser.add_argument("--dataset", type=str, default="zinc", choices=["qm9", "zinc", "pubchem16", "pubchem32", "pubchem64"])
     parser.add_argument("--hv_dim", type=int, default=512)
     parser.add_argument("--depth", type=int, default=None, help="Message passing depth (default: dataset-specific)")
     parser.add_argument("--k_values", type=str, default="6", help="Comma-separated RW step counts")
@@ -501,11 +501,11 @@ def main():
     # -------------------------------------------------------------------
     if args.dataset == "zinc":
         bin_boundaries = get_zinc_rw_boundaries(args.num_bins)
-    elif args.dataset == "pubchem_large":
+    elif args.dataset in ("pubchem16", "pubchem32", "pubchem64"):
         try:
-            bin_boundaries = get_pubchem_large_rw_boundaries(args.num_bins)
+            bin_boundaries = get_pubchem_rw_boundaries(args.dataset, args.num_bins)
         except ValueError:
-            print(f"  No precomputed PubChem-Large boundaries for {args.num_bins} bins, using uniform binning")
+            print(f"  No precomputed {args.dataset} boundaries for {args.num_bins} bins, using uniform binning")
             bin_boundaries = None
     else:
         bin_boundaries = None  # uniform binning for QM9

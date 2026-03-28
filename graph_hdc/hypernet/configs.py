@@ -16,7 +16,7 @@ from graph_hdc.hypernet.types import VSAModel
 from graph_hdc.utils.helpers import pick_device_str
 
 IndexRange = tuple[int, int]
-BaseDataset = Literal["qm9", "zinc", "pubchem_large"]
+BaseDataset = Literal["qm9", "zinc", "pubchem16", "pubchem32", "pubchem64"]
 
 
 class Features(enum.Enum):
@@ -169,7 +169,7 @@ class DecoderSettings:
                 max_graphs_per_iter=1024,
                 fallback_decoder_settings=FallbackDecoderSettings(limit=2048, beam_size=2048),
             )
-        # ZINC and PubChem-Large share the same defaults (large molecules)
+        # ZINC and PubChem variants share the same defaults (large molecules)
         return cls(
             iteration_budget=25,
             max_graphs_per_iter=1024,
@@ -232,13 +232,21 @@ def _get_zinc_config(hv_dim: int = 256) -> DSHDCConfig:
     )
 
 
-def _get_pubchem_large_config(hv_dim: int = 512) -> DSHDCConfig:
-    """Create PubChem-Large dataset configuration."""
+def _get_pubchem_config(variant: str, hv_dim: int | None = None) -> DSHDCConfig:
+    """Create PubChem dataset configuration for a given variant."""
+    defaults = {
+        "pubchem16": {"hv_dim": 256, "depth": 3},
+        "pubchem32": {"hv_dim": 512, "depth": 4},
+        "pubchem64": {"hv_dim": 512, "depth": 4},
+    }
+    info = defaults[variant]
+    if hv_dim is None:
+        hv_dim = info["hv_dim"]
 
     return DSHDCConfig(
         seed=42,
-        name=f"PubChemLargeSmilesHRR{hv_dim}F645G1NG4",
-        base_dataset="pubchem_large",
+        name=f"{variant.capitalize()}SmilesHRR{hv_dim}F645G1NG{info['depth']}",
+        base_dataset=variant,
         vsa=VSAModel.HRR,
         hv_dim=hv_dim,
         device=pick_device_str(),
@@ -246,7 +254,7 @@ def _get_pubchem_large_config(hv_dim: int = 512) -> DSHDCConfig:
             (
                 Features.NODE_FEATURES,
                 FeatureConfig(
-                    count=math.prod([13, 5, 3, 4, 2]),  # 1560 combinations
+                    count=math.prod([12, 5, 3, 4, 2]),  # 1440 combinations
                     encoder_cls=CombinatoricIntegerEncoder,
                     index_range=IndexRange((0, 5)),
                     bins=[13, 5, 3, 4, 2],
@@ -254,7 +262,7 @@ def _get_pubchem_large_config(hv_dim: int = 512) -> DSHDCConfig:
             ),
         ]),
         normalize=True,
-        hypernet_depth=4,
+        hypernet_depth=info["depth"],
         dtype="float64",
     )
 
@@ -263,7 +271,9 @@ class SupportedDataset(enum.Enum):
     """Supported datasets with their configurations."""
     QM9_SMILES_HRR_256_F64_G1NG3 = ("QM9_SMILES_HRR_256_F64_G1NG3", None)
     ZINC_SMILES_HRR_256_F64_5G1NG4 = ("ZINC_SMILES_HRR_256_F64_5G1NG4", None)
-    PUBCHEM_LARGE_SMILES_HRR_512_F64_5G1NG4 = ("PUBCHEM_LARGE_SMILES_HRR_512_F64_5G1NG4", None)
+    PUBCHEM16_SMILES_HRR_256_F64_5G1NG3 = ("PUBCHEM16_SMILES_HRR_256_F64_5G1NG3", None)
+    PUBCHEM32_SMILES_HRR_512_F64_5G1NG4 = ("PUBCHEM32_SMILES_HRR_512_F64_5G1NG4", None)
+    PUBCHEM64_SMILES_HRR_512_F64_5G1NG4 = ("PUBCHEM64_SMILES_HRR_512_F64_5G1NG4", None)
 
     def __new__(cls, value: str, _):
         obj = object.__new__(cls)
@@ -275,8 +285,12 @@ class SupportedDataset(enum.Enum):
         """Get the default configuration for this dataset."""
         if "QM9" in self._value_:
             return _get_qm9_config(hv_dim=256)
-        if "PUBCHEM" in self._value_:
-            return _get_pubchem_large_config(hv_dim=512)
+        if "PUBCHEM16" in self._value_:
+            return _get_pubchem_config("pubchem16")
+        if "PUBCHEM32" in self._value_:
+            return _get_pubchem_config("pubchem32")
+        if "PUBCHEM64" in self._value_:
+            return _get_pubchem_config("pubchem64")
         return _get_zinc_config(hv_dim=256)
 
 
@@ -293,13 +307,17 @@ def get_config(dataset_name: str) -> DSHDCConfig:
 _BASE_BINS: dict[BaseDataset, list[int]] = {
     "qm9": [4, 5, 3, 5],
     "zinc": [9, 6, 3, 4, 2],
-    "pubchem_large": [13, 5, 3, 4, 2],
+    "pubchem16": [12, 5, 3, 4, 2],
+    "pubchem32": [12, 5, 3, 4, 2],
+    "pubchem64": [12, 5, 3, 4, 2],
 }
 
 _BASE_DEPTH: dict[BaseDataset, int] = {
     "qm9": 3,
     "zinc": 4,
-    "pubchem_large": 4,
+    "pubchem16": 3,
+    "pubchem32": 4,
+    "pubchem64": 4,
 }
 
 
@@ -318,7 +336,7 @@ def create_config_with_rw(
 
     Parameters
     ----------
-    base_dataset : {"qm9", "zinc"}
+    base_dataset : {"qm9", "zinc", "pubchem16", "pubchem32", "pubchem64"}
         Which dataset's base feature scheme to use.
     hv_dim : int
         Hypervector dimensionality.

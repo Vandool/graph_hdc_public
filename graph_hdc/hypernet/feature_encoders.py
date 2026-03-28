@@ -99,6 +99,13 @@ class CombinatoricIntegerEncoder(AbstractFeatureEncoder):
         tup = data.squeeze(-1).long() - self.idx_offset
         tup = list(map(tuple, tup.tolist()))
         idxs = self.indexer.get_idxs(tup)
+        if None in idxs:
+            missing = [t for t, i in zip(tup, idxs) if i is None]
+            raise ValueError(
+                f"Feature tuples not found in pruned codebook. "
+                f"Missing (first 5): {missing[:5]}, "
+                f"codebook size: {len(self.indexer.tuple_to_idx)}"
+            )
         idxs_tens = torch.tensor(idxs, dtype=torch.long, device=self.device)
         return self.codebook[idxs_tens]
 

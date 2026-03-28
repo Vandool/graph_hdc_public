@@ -68,10 +68,11 @@ def is_induced_subgraph_by_features(
 
 
 def feature_counter_from_graph(G: nx.Graph) -> Counter[tuple[int, int, int, int]]:
-    """Count node features in a graph, keyed by feat.to_tuple()."""
+    """Count node features in a graph, keyed by raw type tuple."""
     c = Counter()
     for n in G.nodes:
-        c[G.nodes[n]["feat"].to_tuple()] += 1
+        nd = G.nodes[n]
+        c[nd.get("type", nd["feat"].to_tuple())] += 1
     return c
 
 
@@ -133,7 +134,9 @@ def total_edges_count(feat_ctr: Counter[tuple[int, int, int, int]]) -> int:
     return sum(((deg_idx + 1) * v) for (_, deg_idx, _, _), v in feat_ctr.items()) // 2
 
 
-def add_node_with_feat(G: nx.Graph, feat: Feat, node_id: int | None = None) -> int:
+def add_node_with_feat(
+    G: nx.Graph, feat: Feat, node_id: int | None = None, raw_type: tuple | None = None,
+) -> int:
     """
     Add a node with frozen features.
 
@@ -141,21 +144,25 @@ def add_node_with_feat(G: nx.Graph, feat: Feat, node_id: int | None = None) -> i
         G: Target graph (modified in place)
         feat: Node features
         node_id: Optional explicit node id
+        raw_type: Raw feature tuple (preserves exact values that Feat
+                  may booleanize, e.g. RRWP bins at position 4 for QM9)
 
     Returns:
         The node id used
     """
     if node_id is None:
         node_id = 0 if not G.nodes else (max(G.nodes) + 1)
-    G.add_node(node_id, feat=feat, target_degree=feat.target_degree)
+    node_type = raw_type if raw_type is not None else feat.to_tuple()
+    G.add_node(node_id, feat=feat, type=node_type, target_degree=feat.target_degree)
     return node_id
 
 
 def add_node_and_connect(
-    G: nx.Graph, feat: Feat, connect_to: Sequence[int], total_nodes: int
+    G: nx.Graph, feat: Feat, connect_to: Sequence[int], total_nodes: int,
+    raw_type: tuple | None = None,
 ) -> int | None:
     """Add a node and connect to anchors (greedy, respects residuals)."""
-    nid = add_node_with_feat(G, feat)
+    nid = add_node_with_feat(G, feat, raw_type=raw_type)
     return connect_all_if_possible(G, nid, connect_to, total_nodes)
 
 
@@ -188,11 +195,11 @@ def wl_hash(G: nx.Graph, *, iters: int = 3) -> str:
     """WL hash that respects both `feat` and `type` node attributes."""
     H = G.copy()
     for n in H.nodes:
-        if "feat" in H.nodes[n]:
+        if "type" in H.nodes[n]:
+            label = ",".join(map(str, H.nodes[n]["type"]))
+        elif "feat" in H.nodes[n]:
             f = H.nodes[n]["feat"]
             label = ",".join(map(str, f.to_tuple()))
-        elif "type" in H.nodes[n]:
-            label = ",".join(map(str, H.nodes[n]["type"]))
         else:
             label = "unknown"
         H.nodes[n]["__wl_label__"] = label

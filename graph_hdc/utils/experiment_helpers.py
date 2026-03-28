@@ -93,17 +93,17 @@ def create_hdc_config(
             bins=[9, 6, 3, 4, 2],
         )
         base_dataset = "zinc"
-    elif dataset == "pubchem_large":
-        # PubChem-Large: 13 atom types, 5 degrees, 3 charges, 4 hydrogens, 2 ring flags
+    elif dataset in ("pubchem16", "pubchem32", "pubchem64"):
+        # PubChem: 12 atom types, 5 degrees, 3 charges, 4 hydrogens, 2 ring flags
         node_feature_config = FeatureConfig(
-            count=math.prod([13, 5, 3, 4, 2]),  # 1560 combinations
+            count=math.prod([12, 5, 3, 4, 2]),  # 1440 combinations
             encoder_cls=CombinatoricIntegerEncoder,
             index_range=IndexRange((0, 5)),
-            bins=[13, 5, 3, 4, 2],
+            bins=[12, 5, 3, 4, 2],
         )
-        base_dataset = "pubchem_large"
+        base_dataset = dataset
     else:
-        raise ValueError(f"Unknown dataset: {dataset}. Supported: qm9, zinc, pubchem_large")
+        raise ValueError(f"Unknown dataset: {dataset}. Supported: qm9, zinc, pubchem16, pubchem32, pubchem64")
 
     return DSHDCConfig(
         name=f"{dataset.upper()}_HRR_{hv_dim}_depth{depth}",
@@ -2112,9 +2112,9 @@ def smiles_to_pyg_data(smiles: str, dataset: str = "zinc") -> Optional[Data]:
         from graph_hdc.datasets.qm9_smiles import QM9_ATOM_TO_IDX
         atom_to_idx = QM9_ATOM_TO_IDX
         num_features = 4
-    elif dataset.lower() == "pubchem_large":
-        from graph_hdc.datasets.pubchem_large_smiles import PUBCHEM_LARGE_ATOM_TO_IDX
-        atom_to_idx = PUBCHEM_LARGE_ATOM_TO_IDX
+    elif dataset.lower() in ("pubchem16", "pubchem32", "pubchem64"):
+        from graph_hdc.datasets.pubchem_smiles import PUBCHEM_ATOM_TO_IDX
+        atom_to_idx = PUBCHEM_ATOM_TO_IDX
         num_features = 5
     else:
         from graph_hdc.datasets.zinc_smiles import ZINC_ATOM_TO_IDX

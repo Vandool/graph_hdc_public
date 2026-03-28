@@ -9,6 +9,7 @@ from graph_hdc.utils.rw_features import (
     augment_data_with_rw,
     bin_rw_probabilities,
     compute_rw_return_probabilities,
+    get_pubchem_rw_boundaries,
     get_zinc_rw_boundaries,
 )
 
@@ -277,14 +278,46 @@ class TestGetZincRwBoundaries:
 
     def test_invalid_bin_count_raises(self):
         with pytest.raises(ValueError, match="No precomputed boundaries"):
-            get_zinc_rw_boundaries(8)
+            get_zinc_rw_boundaries(9)
 
     def test_more_bins_means_more_boundaries(self):
         """Higher bin counts should have more boundary values."""
         for k in range(2, 17, 2):
             b3 = get_zinc_rw_boundaries(3)[k]
-            b7 = get_zinc_rw_boundaries(7)[k]
-            assert len(b3) < len(b7)
+            b10 = get_zinc_rw_boundaries(10)[k]
+            assert len(b3) < len(b10)
+
+
+# ── PubChem boundaries ────────────────────────────────────────────────
+
+
+class TestGetPubchemRwBoundaries:
+    @pytest.mark.parametrize("variant", ["pubchem16", "pubchem32", "pubchem64"])
+    @pytest.mark.parametrize("num_bins", [6, 7, 8, 9, 10])
+    def test_available_bin_counts(self, variant, num_bins):
+        bounds = get_pubchem_rw_boundaries(variant, num_bins)
+        assert isinstance(bounds, dict)
+        for k in range(2, 21):
+            assert k in bounds
+            assert len(bounds[k]) == num_bins - 1
+
+    @pytest.mark.parametrize("variant", ["pubchem16", "pubchem32", "pubchem64"])
+    @pytest.mark.parametrize("num_bins", [6, 7, 8, 9, 10])
+    def test_boundaries_sorted(self, variant, num_bins):
+        bounds = get_pubchem_rw_boundaries(variant, num_bins)
+        for k, b in bounds.items():
+            for i in range(len(b) - 1):
+                assert b[i] <= b[i + 1], (
+                    f"{variant} bins={num_bins}, k={k}: not sorted: {b}"
+                )
+
+    def test_invalid_variant_raises(self):
+        with pytest.raises(ValueError, match="Unknown PubChem variant"):
+            get_pubchem_rw_boundaries("pubchem99", 6)
+
+    def test_invalid_bin_count_raises(self):
+        with pytest.raises(ValueError, match="No precomputed"):
+            get_pubchem_rw_boundaries("pubchem16", 3)
 
 
 # ── augment_data_with_rw ─────────────────────────────────────────────

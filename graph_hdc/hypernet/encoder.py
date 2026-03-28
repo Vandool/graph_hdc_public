@@ -74,8 +74,14 @@ MAX_ALLOWED_DECODING_NODES_QM9: Final[int] = 18
 MAX_ALLOWED_DECODING_EDGES_QM9: Final[int] = 50
 MAX_ALLOWED_DECODING_NODES_ZINC: Final[int] = 60
 MAX_ALLOWED_DECODING_EDGES_ZINC: Final[int] = 122
-MAX_ALLOWED_DECODING_NODES_PUBCHEM_LARGE: Final[int] = 70
-MAX_ALLOWED_DECODING_EDGES_PUBCHEM_LARGE: Final[int] = 200
+
+# PubChem variants: limits scale with max molecule size
+_PUBCHEM_DECODING_LIMITS: dict[str, tuple[int, int]] = {
+    # (max_nodes, max_edges)
+    "pubchem16": (22, 60),
+    "pubchem32": (40, 130),
+    "pubchem64": (70, 200),
+}
 
 
 class CorrectionLevel(str, enum.Enum):
@@ -177,11 +183,12 @@ class HyperNet(pl.LightningModule):
         self._build_codebooks(device, observed_node_features=observed_node_features)
 
         # Decoding parameters (dataset-dependent)
-        self._decoding_edge_limit = (
-            MAX_ALLOWED_DECODING_EDGES_QM9 if self.base_dataset == "qm9"
-            else MAX_ALLOWED_DECODING_EDGES_PUBCHEM_LARGE if self.base_dataset == "pubchem_large"
-            else MAX_ALLOWED_DECODING_EDGES_ZINC
-        )
+        if self.base_dataset == "qm9":
+            self._decoding_edge_limit = MAX_ALLOWED_DECODING_EDGES_QM9
+        elif self.base_dataset in _PUBCHEM_DECODING_LIMITS:
+            self._decoding_edge_limit = _PUBCHEM_DECODING_LIMITS[self.base_dataset][1]
+        else:
+            self._decoding_edge_limit = MAX_ALLOWED_DECODING_EDGES_ZINC
         self._max_step_delta: float | None = None
 
     def __str__(self) -> str:
@@ -208,9 +215,46 @@ class HyperNet(pl.LightningModule):
     def __repr__(self) -> str:
         return self.__str__()
 
+    @staticmethod
+    def _nx_graphs_to_pyg(graphs: list) -> list:
+        """Convert NX graphs to PyG Data, preferring raw 'type' tuples over Feat objects.
+
+        The 'type' attribute (set by the decoder alongside 'feat') stores
+        the exact feature tuple without round-tripping through Feat, which
+        would booleanize position 4 for datasets without is_in_ring (e.g. QM9+RRWP).
+        """
+        from torch_geometric.data import Data
+
+        data_list = []
+        for g in graphs:
+            nodes = sorted(g.nodes)
+            idx_of = {n: i for i, n in enumerate(nodes)}
+            feats = []
+            for n in nodes:
+                nd = g.nodes[n]
+                if "type" in nd:
+                    feats.append(list(nd["type"]))
+                elif "feat" in nd:
+                    f = nd["feat"]
+                    feats.append(list(f.to_tuple()) if hasattr(f, "to_tuple") else list(f))
+                else:
+                    raise ValueError(f"Node {n} has no 'type' or 'feat' attribute")
+            x = torch.tensor(feats, dtype=torch.float)
+            src, dst = [], []
+            for u, v in g.edges():
+                iu, iv = idx_of[u], idx_of[v]
+                src.extend([iu, iv])
+                dst.extend([iv, iu])
+            edge_index = (
+                torch.tensor([src, dst], dtype=torch.long)
+                if src else torch.empty((2, 0), dtype=torch.long)
+            )
+            data_list.append(Data(x=x, edge_index=edge_index))
+        return data_list
+
     def _batched_forward(self, graphs: list, batch_size: int = 64) -> dict:
         """Encode a list of NX graphs in mini-batches, returning concatenated outputs."""
-        data_list = [DataTransformer.nx_to_pyg(g) for g in graphs]
+        data_list = self._nx_graphs_to_pyg(graphs)
         loader = DataLoader(data_list, batch_size=batch_size, shuffle=False)
         outputs = []
         for mini_batch in loader:
@@ -307,6 +351,9 @@ class HyperNet(pl.LightningModule):
         during training.  This method regenerates the full codebook
         (using the stored seed for reproducibility) so that *any* valid
         feature tuple can be encoded.
+
+        The full Cartesian product is built on CPU to avoid GPU OOM,
+        then moved to the original device.
         """
         device = self.nodes_codebook.device
         # Use the HyperNet-level dtype (correctly saved/loaded) rather
@@ -323,16 +370,21 @@ class HyperNet(pl.LightningModule):
             # Fix the encoder's dtype to match the HyperNet (may differ
             # in old checkpoints where dtype wasn't serialized).
             enc.dtype = dtype_str
-            # Regenerate original full-size codebook (uses num_categories
+            # Regenerate original full-size codebook on CPU (uses num_categories
             # which is never modified by pruning)
-            enc.codebook = enc.generate_codebook().to(device)
+            enc.codebook = enc.generate_codebook().cpu()
             # Rebuild the full Cartesian-product indexer from the stored
             # bin sizes (also unmodified by pruning)
             enc.indexer = TupleIndexer(enc.indexer.sizes)
 
-        # Rebuild the top-level nodes codebook / indexer
+        # Rebuild the top-level nodes codebook / indexer on CPU first
         node_codebooks = [e.codebook for e, _ in self.node_encoder_map.values()]
         self.nodes_codebook = cartesian_bind_tensor(node_codebooks).to(device)
+
+        # Move encoder codebooks to target device
+        for _, (enc, _) in self.node_encoder_map.items():
+            enc.codebook = self.nodes_codebook
+            enc.device = device
 
         enc0 = self.node_encoder_map[Features.NODE_FEATURES][0]
         if isinstance(enc0, CombinatoricIntegerEncoder):
@@ -353,10 +405,16 @@ class HyperNet(pl.LightningModule):
         device: torch.device,
         observed_node_features: set[tuple] | None = None,
     ) -> None:
-        """Build all derived codebooks from encoder maps."""
-        # Nodes codebook: Cartesian bind of all node feature codebooks
-        node_codebooks = [enc.codebook for enc, _ in self.node_encoder_map.values()]
-        self.nodes_codebook = cartesian_bind_tensor(node_codebooks).to(device)
+        """Build all derived codebooks from encoder maps.
+
+        The full Cartesian product of node features can be very large
+        (millions of entries) when many RRWP bins are used.  To avoid
+        GPU OOM, the product is built on CPU first, pruned to the
+        observed feature subset, and only then moved to the target device.
+        """
+        # Nodes codebook: build full Cartesian product on CPU, prune, then move
+        node_codebooks = [enc.codebook.cpu() for enc, _ in self.node_encoder_map.values()]
+        self.nodes_codebook = cartesian_bind_tensor(node_codebooks)  # CPU
 
         # Nodes indexer
         enc = self.node_encoder_map[Features.NODE_FEATURES][0]
@@ -367,12 +425,18 @@ class HyperNet(pl.LightningModule):
             self.nodes_indexer = TupleIndexer(sizes)
 
         # Limit codebook based on observed node types (unless pruning is disabled)
+        # This happens while still on CPU to avoid allocating the full product on GPU
         if self.prune_codebook:
             if observed_node_features is not None:
                 self.limit_nodes_codebook(node_features=observed_node_features)
             else:
                 self.limit_nodes_codebook(node_features=get_dataset_info(self.base_dataset).node_features)
 
+        # Now move the (pruned) nodes codebook to the target device
+        self.nodes_codebook = self.nodes_codebook.to(device)
+        for _, (enc, _) in self.node_encoder_map.items():
+            enc.codebook = self.nodes_codebook
+            enc.device = device
 
         # Edge feature codebook (if edge features exist)
         if self.edge_encoder_map:
@@ -596,8 +660,8 @@ class HyperNet(pl.LightningModule):
         # Get decoding limit based on dataset
         if self.base_dataset == "qm9":
             max_nodes = MAX_ALLOWED_DECODING_NODES_QM9
-        elif self.base_dataset == "pubchem_large":
-            max_nodes = MAX_ALLOWED_DECODING_NODES_PUBCHEM_LARGE
+        elif self.base_dataset in _PUBCHEM_DECODING_LIMITS:
+            max_nodes = _PUBCHEM_DECODING_LIMITS[self.base_dataset][0]
         else:
             max_nodes = MAX_ALLOWED_DECODING_NODES_ZINC
 
@@ -1282,11 +1346,12 @@ class HyperNet(pl.LightningModule):
             if not target_reached(decoded_edges):
                 decoded_edges = self.decode_order_one(edge_term=edge_term.clone(), node_counter=node_counter)
 
-        node_limit = (
-            MAX_ALLOWED_DECODING_NODES_QM9 if self.base_dataset == "qm9"
-            else MAX_ALLOWED_DECODING_NODES_PUBCHEM_LARGE if self.base_dataset == "pubchem_large"
-            else MAX_ALLOWED_DECODING_NODES_ZINC
-        )
+        if self.base_dataset == "qm9":
+            node_limit = MAX_ALLOWED_DECODING_NODES_QM9
+        elif self.base_dataset in _PUBCHEM_DECODING_LIMITS:
+            node_limit = _PUBCHEM_DECODING_LIMITS[self.base_dataset][0]
+        else:
+            node_limit = MAX_ALLOWED_DECODING_NODES_ZINC
         if node_counter.total() > node_limit:
             return DecodingResult(correction_level=CorrectionLevel.FAIL)
 
@@ -1300,8 +1365,8 @@ class HyperNet(pl.LightningModule):
         global_seen: set = set()
         for k, (u_t, v_t) in enumerate(decoded_edges):
             G = nx.Graph()
-            uid = add_node_with_feat(G, Feat.from_tuple(u_t))
-            ok = add_node_and_connect(G, Feat.from_tuple(v_t), connect_to=[uid], total_nodes=node_count) is not None
+            uid = add_node_with_feat(G, Feat.from_tuple(u_t), raw_type=u_t)
+            ok = add_node_and_connect(G, Feat.from_tuple(v_t), connect_to=[uid], total_nodes=node_count, raw_type=v_t) is not None
             if not ok:
                 continue
             key = _hash(G)
@@ -1351,14 +1416,14 @@ class HyperNet(pl.LightningModule):
 
                 # Try to connect the left over nodes to the lowest degree anchors
                 for a, lo_t in list(itertools.product(lowest_degree_ancrs, leftover_types)):
-                    a_t = G.nodes[a]["feat"].to_tuple()
+                    a_t = G.nodes[a]["type"]
                     # OPTIMIZATION: Use Counter for O(1) lookup (no set conversion needed)
                     if edges_left[(a_t, lo_t)] == 0:
                         continue
 
                     # OPTIMIZATION: Use nx.Graph(G) instead of G.copy() for faster copying
                     C = nx.Graph(G)
-                    nid = add_node_and_connect(C, Feat.from_tuple(lo_t), connect_to=[a], total_nodes=node_count)
+                    nid = add_node_and_connect(C, Feat.from_tuple(lo_t), connect_to=[a], total_nodes=node_count, raw_type=lo_t)
                     if nid is None:
                         continue
                     if C.number_of_edges() > edge_count:
@@ -1371,7 +1436,7 @@ class HyperNet(pl.LightningModule):
                     # # Early pruning of bad ring structures
                     if (
                         validate_ring_structure
-                        and self.base_dataset in ("zinc", "pubchem_large")
+                        and self.base_dataset in ("zinc", "pubchem16", "pubchem32", "pubchem64")
                         and not has_valid_ring_structure(
                             G=C,
                             processed_histogram=self.dataset_info.ring_histogram,
@@ -1393,7 +1458,7 @@ class HyperNet(pl.LightningModule):
                     ancrs_rest = [a_ for a_ in ancrs if a_ != a]
 
                     # OPTIMIZATION: remaining_edges is already a Counter, use it directly
-                    nid_t = C.nodes[nid]["feat"].to_tuple()
+                    nid_t = C.nodes[nid]["type"]
 
                     for subset in powerset(ancrs_rest):
                         if len(subset) == 0:
@@ -1401,7 +1466,7 @@ class HyperNet(pl.LightningModule):
 
                         # OPTIMIZATION: Build all_new_connection and validate using Counter
                         all_new_connection = []
-                        subset_ts = [C.nodes[s]["feat"].to_tuple() for s in subset]
+                        subset_ts = [C.nodes[s]["type"] for s in subset]
                         should_continue = False
                         for st in subset_ts:
                             ts = (nid_t, st)
@@ -1828,11 +1893,12 @@ class HyperNet(pl.LightningModule):
         instance.rw_config = RWConfig(**rw_dict) if rw_dict else RWConfig()
         instance.prune_codebook = cfg.get("prune_codebook", True)
         instance.normalize_graph_embedding = cfg.get("normalize_graph_embedding", False)
-        instance._decoding_edge_limit = (
-            50 if instance.base_dataset == "qm9"
-            else 200 if instance.base_dataset == "pubchem_large"
-            else 122
-        )
+        if instance.base_dataset == "qm9":
+            instance._decoding_edge_limit = 50
+        elif instance.base_dataset in _PUBCHEM_DECODING_LIMITS:
+            instance._decoding_edge_limit = _PUBCHEM_DECODING_LIMITS[instance.base_dataset][1]
+        else:
+            instance._decoding_edge_limit = 122
         instance._max_step_delta = None
 
         # Restore encoder maps
