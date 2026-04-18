@@ -830,6 +830,9 @@ class HyperNet(pl.LightningModule):
 
         :returns: A list of edges represented as tuples of (u, v) where u and v are node tuples
         """
+        if not node_counter:
+            return []
+
         all_edges = list(itertools.product(node_counter.keys(), node_counter.keys()))
         num_edges = sum([(k[1] + 1) * n for k, n in node_counter.items()])
         edge_count = num_edges

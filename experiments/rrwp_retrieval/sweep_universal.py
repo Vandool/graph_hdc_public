@@ -26,25 +26,31 @@ from pathlib import Path
 PYTHON = sys.executable
 
 SCRIPT = str(Path(__file__).parent / "run_rrwp_retrieval.py")
-OUTPUT_DIR = str(Path(__file__).parent.parent / "results" / "sweep_universal")
+OUTPUT_DIR = str(Path(__file__).parent.parent / "results" / "universal_config")
 
 # ── Sweep grid ──────────────────────────────────────────────────────
-DATASETS = ["qm9", "zinc", "pubchem16", "pubchem32", "pubchem64"]
+DATASETS = ["qm9", "pubchem16", "pubchem32", "pubchem64"]
 
-DIMS = [512, 768, 1024]
-DEPTHS = [2, 3]               # depth has minimal effect beyond 2
+DIMS = [1024]
+DEPTHS = [
+    # 2,
+    3
+]  # depth has minimal effect beyond 2
 K_VALUES = [
     # "4",
-    "6,12",                    # 2 features, sparse — good capacity ratio
-    "4,8,12",                  # ZINC baseline best (3 features)
-    "6,10,14",                 # non-standard even spacing
-    "6,12,16",                 # wider spacing (3 features)
-    "4,8,12,16",               # 4 features, standard
+    # "6,12",                    # 2 features, sparse — good capacity ratio
+    # "4,8,12",                  # ZINC baseline best (3 features)
+    "6,10,14",  # non-standard even spacing
+    # "6,12,16",                 # wider spacing (3 features)
+    # "4,8,12,16",               # 4 features, standard
     # "6,24"
 ]
-BINS = [6, 8]                  # universal overlap between ZINC & PubChem
-BEAM_SIZES = [32]              # beam=32 is clearly best from prior sweeps
-N_SAMPLES = 500
+BINS = [
+    # 6,
+    8
+]  # universal overlap between ZINC & PubChem
+BEAM_SIZES = [32]  # beam=32 is clearly best from prior sweeps
+N_SAMPLES = 10
 
 # Fixed
 DECODER = "greedy"
@@ -65,17 +71,28 @@ def is_done(dataset, depth, dim, k_values, num_bins, beam_size):
 
 def build_cmd(dataset, depth, dim, k_values, num_bins, beam_size):
     return [
-        PYTHON, SCRIPT,
-        "--dataset", dataset,
-        "--hv_dim", str(dim),
-        "--depth", str(depth),
-        "--k_values", k_values,
-        "--num_bins", str(num_bins),
-        "--n_samples", str(N_SAMPLES),
-        "--decoder", DECODER,
-        "--beam_size", str(beam_size),
-        "--seed", str(SEED),
-        "--output_dir", OUTPUT_DIR,
+        PYTHON,
+        SCRIPT,
+        "--dataset",
+        dataset,
+        "--hv_dim",
+        str(dim),
+        "--depth",
+        str(depth),
+        "--k_values",
+        k_values,
+        "--num_bins",
+        str(num_bins),
+        "--n_samples",
+        str(N_SAMPLES),
+        "--decoder",
+        DECODER,
+        "--beam_size",
+        str(beam_size),
+        "--seed",
+        str(SEED),
+        "--output_dir",
+        OUTPUT_DIR,
     ]
 
 
@@ -91,7 +108,9 @@ def run_one(args):
     print(f"  [{idx}/{total}] {tag} — {status} ({elapsed:.0f}s)")
     if result.returncode != 0:
         # Print last 10 lines of stderr for debugging
-        stderr_lines = result.stderr.decode("utf-8", errors="replace").strip().split("\n")
+        stderr_lines = (
+            result.stderr.decode("utf-8", errors="replace").strip().split("\n")
+        )
         for line in stderr_lines[-10:]:
             print(f"    STDERR: {line}")
     return tag, result.returncode, elapsed
@@ -102,8 +121,11 @@ def main():
     parser.add_argument("--workers", type=int, default=4, help="Max parallel runs")
     parser.add_argument("--sequential", action="store_true", help="Run one at a time")
     parser.add_argument(
-        "--datasets", nargs="+", default=DATASETS,
-        choices=DATASETS, help="Which datasets to sweep (default: all three)",
+        "--datasets",
+        nargs="+",
+        default=DATASETS,
+        choices=DATASETS,
+        help="Which datasets to sweep (default: all three)",
     )
     cli = parser.parse_args()
 
@@ -113,7 +135,10 @@ def main():
     configs = []
     for dataset in datasets:
         for dim, depth, num_bins, k_vals in itertools.product(
-            DIMS, DEPTHS, BINS, K_VALUES,
+            DIMS,
+            DEPTHS,
+            BINS,
+            K_VALUES,
         ):
             configs.append((dataset, depth, dim, k_vals, num_bins, BEAM_SIZES[0]))
 
@@ -140,10 +165,7 @@ def main():
         print("  All configs already done!")
         return
 
-    work = [
-        (i, len(remaining), *c)
-        for i, c in enumerate(remaining, 1)
-    ]
+    work = [(i, len(remaining), *c) for i, c in enumerate(remaining, 1)]
 
     failed = []
     completed = skipped
@@ -167,10 +189,12 @@ def main():
                     completed += 1
 
     total_time = time.time() - t_start
-    print(f"\n{'='*70}")
-    print(f"  Sweep complete: {completed}/{total} succeeded ({skipped} skipped), {len(failed)} failed")
-    print(f"  Total wall time: {total_time:.0f}s ({total_time/60:.1f}min)")
-    print(f"{'='*70}")
+    print(f"\n{'=' * 70}")
+    print(
+        f"  Sweep complete: {completed}/{total} succeeded ({skipped} skipped), {len(failed)} failed"
+    )
+    print(f"  Total wall time: {total_time:.0f}s ({total_time / 60:.1f}min)")
+    print(f"{'=' * 70}")
     if failed:
         print("\nFailed configurations:")
         for tag, rc in failed:

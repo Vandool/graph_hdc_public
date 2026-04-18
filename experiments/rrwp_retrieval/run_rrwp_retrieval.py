@@ -24,6 +24,7 @@ from collections import Counter
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -46,12 +47,17 @@ from graph_hdc.hypernet.configs import (
 from graph_hdc.hypernet.encoder import HyperNet
 from graph_hdc.hypernet.types import Feat
 from graph_hdc.utils.helpers import DataTransformer, pick_device
-from graph_hdc.utils.rw_features import augment_data_with_rw, get_pubchem_rw_boundaries, get_zinc_rw_boundaries
+from graph_hdc.utils.rw_features import (
+    augment_data_with_rw,
+    get_pubchem_rw_boundaries,
+    get_zinc_rw_boundaries,
+)
 
 
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
+
 
 def pyg_to_nx_for_ground_truth(data, base_feature_dim: int):
     """Convert PyG data to NX, stripping RRWP columns for compatibility.
@@ -138,13 +144,16 @@ def plot_by_size(
     ax.grid(axis="y", alpha=0.3, linestyle="--")
     plt.tight_layout()
     prefix = f"{tag}_" if tag else ""
-    fig.savefig(output_dir / f"{prefix}{metric}_by_size.pdf", dpi=300, bbox_inches="tight")
+    fig.savefig(
+        output_dir / f"{prefix}{metric}_by_size.pdf", dpi=300, bbox_inches="tight"
+    )
     plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
 # Feature cache
 # ---------------------------------------------------------------------------
+
 
 def _cache_path(output_dir: Path, dataset: str, k_values: tuple, num_bins: int) -> Path:
     cache_dir = output_dir / "feature_cache"
@@ -159,7 +168,9 @@ def load_or_scan_features(
     rw_config: RWConfig,
 ) -> tuple[set[tuple], set[tuple[tuple, tuple]]]:
     """Load cached observed node and edge features, or scan the dataset."""
-    cache = _cache_path(output_dir, dataset_name, rw_config.k_values, rw_config.num_bins)
+    cache = _cache_path(
+        output_dir, dataset_name, rw_config.k_values, rw_config.num_bins
+    )
     if cache.is_file():
         print(f"Loading cached features from {cache}")
         with open(cache, "rb") as f:
@@ -172,7 +183,9 @@ def load_or_scan_features(
             print(f"  {len(nodes)} node types, {len(edges)} edge types")
             return nodes, edges
 
-    print("Scanning dataset for observed RW-augmented features (this may take a while)...")
+    print(
+        "Scanning dataset for observed RW-augmented features (this may take a while)..."
+    )
     nodes, edges = scan_features_with_rw(dataset_name, rw_config)
     with open(cache, "wb") as f:
         pickle.dump((nodes, edges), f)
@@ -183,6 +196,7 @@ def load_or_scan_features(
 # ---------------------------------------------------------------------------
 # Single-condition runner
 # ---------------------------------------------------------------------------
+
 
 def run_condition(
     *,
@@ -217,13 +231,15 @@ def run_condition(
         dt = time.time() - t0
         batch_list = batch.to_data_list()
         for i, d in enumerate(batch_list):
-            encoded.append({
-                "pyg_data": d,
-                "edge_term": out["edge_terms"][i],
-                "graph_term": out["graph_embedding"][i],
-                "encoding_time": dt / len(batch_list),
-                "num_nodes": d.num_nodes,
-            })
+            encoded.append(
+                {
+                    "pyg_data": d,
+                    "edge_term": out["edge_terms"][i],
+                    "graph_term": out["graph_embedding"][i],
+                    "encoding_time": dt / len(batch_list),
+                    "num_nodes": d.num_nodes,
+                }
+            )
 
     # --- Phase 2 & 3: Decoding ---
     feature_dim = samples[0].x.size(1)  # total feature dim (may include RRWP)
@@ -249,15 +265,10 @@ def run_condition(
         nx_gt = pyg_to_nx_for_ground_truth(pyg_data, base_feature_dim)
 
         # --- Edge decoding ---
-        # Build node_counter from the sample's features (like the original
-        # decode_order_one approach) so we only check edge pairs between
-        # node types actually present — not the entire edges codebook.
-        node_tuples = [tuple(row) for row in pyg_data.x.int().tolist()]
-        node_counter = Counter(node_tuples)
-
+        # Decode edges purely from the edge_term (no ground truth hints).
         t0 = time.time()
         with torch.no_grad():
-            decoded_edges = hypernet.decode_order_one(edge_term.clone(), node_counter)
+            decoded_edges = hypernet.decode_order_one_no_node_terms(edge_term.clone())
         edge_dec_time = time.time() - t0
         edge_dec_times.append(edge_dec_time)
 
@@ -269,8 +280,12 @@ def run_condition(
         edge_acc_full.append(ea_full)
 
         # Edge accuracy: base features only
-        orig_base = [(s[:base_feature_dim], d[:base_feature_dim]) for s, d in original_edges]
-        dec_base = [(s[:base_feature_dim], d[:base_feature_dim]) for s, d in decoded_edges]
+        orig_base = [
+            (s[:base_feature_dim], d[:base_feature_dim]) for s, d in original_edges
+        ]
+        dec_base = [
+            (s[:base_feature_dim], d[:base_feature_dim]) for s, d in decoded_edges
+        ]
         ea_base = compute_edge_accuracy(orig_base, dec_base)
         edge_acc_base.append(ea_base)
 
@@ -326,7 +341,9 @@ def run_condition(
     n = len(encoded)
     corr_pcts = {k: v / n * 100 for k, v in corr_counter.items()}
 
-    n_graph_hits = sum(1 for g in graph_accs if g == 1.0) if not skip_graph_decode else 0
+    n_graph_hits = (
+        sum(1 for g in graph_accs if g == 1.0) if not skip_graph_decode else 0
+    )
     n_perfect_edge = sum(1 for e in edge_acc_full if e == 1.0)
 
     summary = {
@@ -339,54 +356,63 @@ def run_condition(
     }
 
     if not skip_graph_decode:
-        summary.update({
-            "graph_accuracy": n_graph_hits / n,
-            "graph_hits": n_graph_hits,
-            "graph_hits_pct": n_graph_hits / n * 100,
-            "cosine_similarity": float(np.mean(cosine_sims)),
-            "correction_level_ZERO_pct": corr_pcts.get("ZERO", 0.0),
-            "correction_level_ONE_pct": corr_pcts.get("ONE", 0.0),
-            "correction_level_TWO_pct": corr_pcts.get("TWO", 0.0),
-            "correction_level_THREE_pct": corr_pcts.get("THREE", 0.0),
-            "correction_level_FAIL_pct": corr_pcts.get("FAIL", 0.0),
-        })
+        summary.update(
+            {
+                "graph_accuracy": n_graph_hits / n,
+                "graph_hits": n_graph_hits,
+                "graph_hits_pct": n_graph_hits / n * 100,
+                "cosine_similarity": float(np.mean(cosine_sims)),
+            }
+        )
 
-    summary.update({
-        "encoding_time_avg": float(np.mean(encoding_times)),
-        "edge_decoding_time_avg": float(np.mean(edge_dec_times)),
-        "graph_decoding_time_avg": float(np.mean(graph_dec_times)),
-    })
+    summary.update(
+        {
+            "encoding_time_avg": float(np.mean(encoding_times)),
+            "edge_decoding_time_avg": float(np.mean(edge_dec_times)),
+            "graph_decoding_time_avg": float(np.mean(graph_dec_times)),
+        }
+    )
 
     total_dec_times = [e + g for e, g in zip(edge_dec_times, graph_dec_times)]
-    detail_df = pd.DataFrame({
-        "condition": condition_name,
-        "num_nodes": num_nodes_list,
-        "edge_accuracy_full": edge_acc_full,
-        "edge_accuracy_base": edge_acc_base,
-        "graph_accuracy": graph_accs,
-        "cosine_similarity": cosine_sims,
-        "correction_level": correction_levels,
-        "encoding_time": encoding_times,
-        "edge_decoding_time": edge_dec_times,
-        "graph_decoding_time": graph_dec_times,
-        "total_decoding_time": total_dec_times,
-    })
+    detail_df = pd.DataFrame(
+        {
+            "condition": condition_name,
+            "num_nodes": num_nodes_list,
+            "edge_accuracy_full": edge_acc_full,
+            "edge_accuracy_base": edge_acc_base,
+            "graph_accuracy": graph_accs,
+            "cosine_similarity": cosine_sims,
+            "correction_level": correction_levels,
+            "encoding_time": encoding_times,
+            "edge_decoding_time": edge_dec_times,
+            "graph_decoding_time": graph_dec_times,
+            "total_decoding_time": total_dec_times,
+        }
+    )
 
     # Print
     print(f"\n  Edge accuracy (full):    {summary['edge_accuracy_full']:.4f}")
     print(f"  Edge accuracy (base):    {summary['edge_accuracy_base']:.4f}")
-    print(f"  Perfect edge decode:     {n_perfect_edge}/{n} ({summary['perfect_edge_decode_pct']:.1f}%)")
+    print(
+        f"  Perfect edge decode:     {n_perfect_edge}/{n} ({summary['perfect_edge_decode_pct']:.1f}%)"
+    )
     if not skip_graph_decode:
-        print(f"  Graph accuracy:          {n_graph_hits}/{n} ({summary['graph_hits_pct']:.1f}%)")
+        print(
+            f"  Graph accuracy:          {n_graph_hits}/{n} ({summary['graph_hits_pct']:.1f}%)"
+        )
         print(f"  Cosine similarity:       {summary['cosine_similarity']:.4f}")
     print(f"  Encoding time (avg):     {summary['encoding_time_avg']:.4f} s/graph")
     print(f"  Edge decode time (avg):  {summary['edge_decoding_time_avg']:.4f} s/graph")
-    print(f"  Graph decode time (avg): {summary['graph_decoding_time_avg']:.4f} s/graph")
+    print(
+        f"  Graph decode time (avg): {summary['graph_decoding_time_avg']:.4f} s/graph"
+    )
 
     return summary, detail_df
 
 
-def _save_condition(output_dir, tag, experiment_params, condition_name, summary, detail_df):
+def _save_condition(
+    output_dir, tag, experiment_params, condition_name, summary, detail_df
+):
     """Save one condition's results immediately (JSON, CSV, summary.csv row)."""
     detail_df.to_csv(output_dir / f"{tag}_{condition_name}_detailed.csv", index=False)
 
@@ -408,22 +434,45 @@ def _save_condition(output_dir, tag, experiment_params, condition_name, summary,
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="RRWP-enriched retrieval experiment",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--dataset", type=str, default="zinc", choices=["qm9", "zinc", "pubchem16", "pubchem32", "pubchem64"])
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="zinc",
+        choices=["qm9", "zinc", "pubchem16", "pubchem32", "pubchem64"],
+    )
     parser.add_argument("--hv_dim", type=int, default=512)
-    parser.add_argument("--depth", type=int, default=None, help="Message passing depth (default: dataset-specific)")
-    parser.add_argument("--k_values", type=str, default="6", help="Comma-separated RW step counts")
-    parser.add_argument("--num_bins", type=int, default=4, help="Quantile bins per RW feature")
+    parser.add_argument(
+        "--depth",
+        type=int,
+        default=None,
+        help="Message passing depth (default: dataset-specific)",
+    )
+    parser.add_argument(
+        "--k_values", type=str, default="6", help="Comma-separated RW step counts"
+    )
+    parser.add_argument(
+        "--num_bins", type=int, default=4, help="Quantile bins per RW feature"
+    )
     parser.add_argument("--n_samples", type=int, default=1000)
-    parser.add_argument("--decoder", type=str, default="greedy", choices=["pattern_matching", "greedy"])
+    parser.add_argument(
+        "--decoder", type=str, default="greedy", choices=["pattern_matching", "greedy"]
+    )
     parser.add_argument("--beam_size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--output_dir", type=str, default=None, help="Override output directory")
-    parser.add_argument("--skip_graph_decode", action="store_true", help="Skip full graph decode (faster)")
+    parser.add_argument(
+        "--output_dir", type=str, default=None, help="Override output directory"
+    )
+    parser.add_argument(
+        "--skip_graph_decode",
+        action="store_true",
+        help="Skip full graph decode (faster)",
+    )
 
     args = parser.parse_args()
     seed_everything(args.seed)
@@ -432,6 +481,7 @@ def main():
     depth = args.depth
     if depth is None:
         from graph_hdc.hypernet.configs import _BASE_DEPTH
+
         depth = _BASE_DEPTH.get(args.dataset, 4)
 
     if args.output_dir:
@@ -442,6 +492,7 @@ def main():
 
     # Base feature dimension and bins per dataset
     from graph_hdc.hypernet.configs import _BASE_BINS
+
     base_bins = _BASE_BINS[args.dataset]
     base_feature_dim = len(base_bins)
 
@@ -456,7 +507,7 @@ def main():
     print(f"  RW k-values:      {k_values}")
     print(f"  RW num_bins:      {args.num_bins}")
     print(f"  Base bins:        {base_bins}")
-    print(f"  Extended bins:    {base_bins + [args.num_bins]*len(k_values)}")
+    print(f"  Extended bins:    {base_bins + [args.num_bins] * len(k_values)}")
     print(f"  Samples:          {args.n_samples}")
     print(f"  Decoder:          {args.decoder}")
     print(f"  Beam size:        {args.beam_size}")
@@ -477,12 +528,19 @@ def main():
         sample_indices = list(range(dataset_size))
     else:
         print("Computing molecular sizes for stratified sampling...")
-        sizes = np.array([dataset[i].num_nodes for i in tqdm(range(dataset_size), desc="Sizes")])
+        sizes = np.array(
+            [dataset[i].num_nodes for i in tqdm(range(dataset_size), desc="Sizes")]
+        )
         bin_labels = pd.qcut(sizes, q=4, labels=False, duplicates="drop")
         n_bins = len(np.unique(bin_labels))
         all_idx = np.arange(dataset_size)
         if args.n_samples >= n_bins:
-            sample_indices, _ = train_test_split(all_idx, train_size=args.n_samples, stratify=bin_labels, random_state=args.seed)
+            sample_indices, _ = train_test_split(
+                all_idx,
+                train_size=args.n_samples,
+                stratify=bin_labels,
+                random_state=args.seed,
+            )
         else:
             rng = np.random.RandomState(args.seed)
             sample_indices = rng.choice(all_idx, size=args.n_samples, replace=False)
@@ -491,7 +549,9 @@ def main():
     print(f"Sampled {len(sample_indices)} molecules from {dataset_size}")
 
     # Gather base PyG data objects for sampled molecules
-    base_samples = [dataset[i].clone() for i in tqdm(sample_indices, desc="Collecting samples")]
+    base_samples = [
+        dataset[i].clone() for i in tqdm(sample_indices, desc="Collecting samples")
+    ]
 
     device = pick_device()
     print(f"Device: {device}")
@@ -505,7 +565,9 @@ def main():
         try:
             bin_boundaries = get_pubchem_rw_boundaries(args.dataset, args.num_bins)
         except ValueError:
-            print(f"  No precomputed {args.dataset} boundaries for {args.num_bins} bins, using uniform binning")
+            print(
+                f"  No precomputed {args.dataset} boundaries for {args.num_bins} bins, using uniform binning"
+            )
             bin_boundaries = None
     else:
         bin_boundaries = None  # uniform binning for QM9
@@ -517,8 +579,12 @@ def main():
         bin_boundaries=bin_boundaries,
     )
 
-    observed_nodes, observed_edges = load_or_scan_features(output_dir, args.dataset, rw_config)
-    print(f"Observed: {len(observed_nodes)} node types, {len(observed_edges)} edge types")
+    observed_nodes, observed_edges = load_or_scan_features(
+        output_dir, args.dataset, rw_config
+    )
+    print(
+        f"Observed: {len(observed_nodes)} node types, {len(observed_edges)} edge types"
+    )
 
     # -------------------------------------------------------------------
     # 3. Create RRWP config & HyperNet (standard HyperNet, extended bins)
@@ -532,11 +598,15 @@ def main():
     )
 
     print(f"\nRRWP config bins: {rrwp_config.node_feature_configs}")
-    rrwp_hypernet = HyperNet(
-        config=rrwp_config,
-        depth=depth,
-        observed_node_features=observed_nodes,
-    ).eval().to(device)
+    rrwp_hypernet = (
+        HyperNet(
+            config=rrwp_config,
+            depth=depth,
+            observed_node_features=observed_nodes,
+        )
+        .eval()
+        .to(device)
+    )
 
     # Prune edges codebook to observed edge pairs
     rrwp_hypernet.limit_edges_codebook(observed_edges)
@@ -546,7 +616,9 @@ def main():
     print(f"\n--- Codebook Stats ---")
     print(f"  nodes_codebook: {rrwp_hypernet.nodes_codebook.shape}")
     if rrwp_hypernet._edges_codebook is not None:
-        print(f"  edges_codebook: {rrwp_hypernet._edges_codebook.shape} (pruned from {n_nodes**2})")
+        print(
+            f"  edges_codebook: {rrwp_hypernet._edges_codebook.shape} (pruned from {n_nodes**2})"
+        )
     else:
         print(f"  edges_codebook: (lazy, estimated {n_nodes}^2 = {n_nodes**2} entries)")
 
@@ -598,7 +670,9 @@ def main():
     }
 
     # Save results
-    _save_condition(output_dir, tag, experiment_params, "rrwp", rrwp_summary, rrwp_detail)
+    _save_condition(
+        output_dir, tag, experiment_params, "rrwp", rrwp_summary, rrwp_detail
+    )
 
     # JSON summary
     combined = {"args": vars(args), "rrwp": rrwp_summary}
@@ -606,11 +680,29 @@ def main():
         json.dump(combined, f, indent=2, default=str)
 
     # Plots by molecule size
-    plot_by_size(rrwp_detail, output_dir, metric="edge_accuracy_full", ylabel="Edge Accuracy (full features)", tag=tag)
+    plot_by_size(
+        rrwp_detail,
+        output_dir,
+        metric="edge_accuracy_full",
+        ylabel="Edge Accuracy (full features)",
+        tag=tag,
+    )
 
     if not args.skip_graph_decode:
-        plot_by_size(rrwp_detail, output_dir, metric="graph_accuracy", ylabel="Graph Accuracy", tag=tag)
-        plot_by_size(rrwp_detail, output_dir, metric="total_decoding_time", ylabel="Avg Total Decoding Time (s)", tag=tag)
+        plot_by_size(
+            rrwp_detail,
+            output_dir,
+            metric="graph_accuracy",
+            ylabel="Graph Accuracy",
+            tag=tag,
+        )
+        plot_by_size(
+            rrwp_detail,
+            output_dir,
+            metric="total_decoding_time",
+            ylabel="Avg Total Decoding Time (s)",
+            tag=tag,
+        )
 
     print(f"\nResults saved to {output_dir}")
     print(f"  Summary: {tag}_summary.json")
