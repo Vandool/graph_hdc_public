@@ -1703,6 +1703,9 @@ class HyperNet(pl.LightningModule):
         # Extract top_k parameter from decoder_settings (consistent with main decode_graph)
         top_k = decoder_settings.top_k if decoder_settings.top_k is not None else 10
 
+        if not population:
+            return DecodingResult(correction_level=CorrectionLevel.FAIL)
+
         # Sort the final population by cosine similarity to graph_term
         graphs, edges_left = zip(*population, strict=True)
         # OPTIMIZATION: Use Counter.total() to check if empty
