@@ -248,7 +248,6 @@ def run_condition(
     edge_acc_base = []
     graph_accs = []
     cosine_sims = []
-    correction_levels = []
     encoding_times = []
     edge_dec_times = []
     graph_dec_times = []
@@ -293,7 +292,6 @@ def run_condition(
         if skip_graph_decode:
             graph_accs.append(float("nan"))
             cosine_sims.append(float("nan"))
-            correction_levels.append("SKIPPED")
             graph_dec_times.append(0.0)
             continue
 
@@ -318,8 +316,6 @@ def run_condition(
         graph_dec_time = time.time() - t0
         graph_dec_times.append(graph_dec_time)
 
-        correction_levels.append(result.correction_level.name)
-
         if len(result.nx_graphs) > 0:
             decoded_g = result.nx_graphs[0]
             match = graphs_isomorphic_base(nx_gt, decoded_g, base_feature_dim)
@@ -337,9 +333,7 @@ def run_condition(
             cosine_sims.append(0.0)
 
     # --- Summary ---
-    corr_counter = Counter(correction_levels)
     n = len(encoded)
-    corr_pcts = {k: v / n * 100 for k, v in corr_counter.items()}
 
     n_graph_hits = (
         sum(1 for g in graph_accs if g == 1.0) if not skip_graph_decode else 0
@@ -382,7 +376,6 @@ def run_condition(
             "edge_accuracy_base": edge_acc_base,
             "graph_accuracy": graph_accs,
             "cosine_similarity": cosine_sims,
-            "correction_level": correction_levels,
             "encoding_time": encoding_times,
             "edge_decoding_time": edge_dec_times,
             "graph_decoding_time": graph_dec_times,
@@ -425,6 +418,10 @@ def _save_condition(
     df_new = pd.DataFrame([row])
     if summary_csv.exists():
         df_old = pd.read_csv(summary_csv)
+        # Drop legacy correction level columns
+        correction_cols = [c for c in df_old.columns if c.startswith("correction_level")]
+        if correction_cols:
+            df_old = df_old.drop(columns=correction_cols)
         df_new = pd.concat([df_old, df_new], ignore_index=True)
     df_new.to_csv(summary_csv, index=False)
     print(f"\n  Saved {condition_name} results to {output_dir}")

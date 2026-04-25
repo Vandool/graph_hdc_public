@@ -66,10 +66,14 @@ exclude = [
     "data/",
 ]
 
-# uv configuration for PyTorch CPU/CUDA handling
-# Install with: uv sync --extra cpu   OR   uv sync --extra cuda
-# uv configuration for PyTorch CPU/CUDA handling
-# Install with: uv sync --extra cpu   OR   uv sync --extra cuda   OR   uv sync --extra cuda128
+# uv configuration for PyTorch CPU/CUDA handling.
+# Install:
+#   uv sync --extra cpu                           # CPU-only
+#   uv sync --extra cuda                          # cu126 wheel
+#   uv sync --extra cuda128                       # cu128 wheel (default for local + uc3 cluster)
+# On uc3 (BWUNICLUSTER 3.0) the cu128 wheel ships its own CUDA runtime; the
+# `module load devel/cuda` inside the slurm wrap only needs to provide a
+# compatible driver. See experiments/rrwp_retrieval/cluster/README.md.
 [tool.uv]
 conflicts = [
     [
