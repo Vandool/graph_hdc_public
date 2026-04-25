@@ -14,7 +14,6 @@
 #   N_SAMPLES=5000
 #   SEED=42
 #   OUTPUT_DIR=$GHDC_PUBLIC_HOME/experiments/results/cluster/rrwp_retrieval
-#   SKIP_GRAPH_DECODE=0   # set to 1 to pass --skip_graph_decode
 #
 # Cluster scheduling overrides (optional):
 #   GPUS=1, CPUS_PER_TASK=16, NODES=1, NTASKS=1
@@ -45,7 +44,6 @@ NUM_BINS="${NUM_BINS:-8}"
 BEAM_SIZE="${BEAM_SIZE:-32}"
 N_SAMPLES="${N_SAMPLES:-5000}"
 SEED="${SEED:-42}"
-SKIP_GRAPH_DECODE="${SKIP_GRAPH_DECODE:-0}"
 
 ONLY_PARTITIONS="${ONLY_PARTITIONS:-}"
 
@@ -79,9 +77,6 @@ PY_ARGS=(
   --seed "$SEED"
   --output_dir "$OUTPUT_DIR"
 )
-if [[ "$SKIP_GRAPH_DECODE" == "1" ]]; then
-  PY_ARGS+=(--skip_graph_decode)
-fi
 QUOTED_ARGS="$(printf '%q ' "${PY_ARGS[@]}")"
 
 # -----------------------------
